@@ -1,0 +1,10 @@
+{
+    "id": "obsidian-midi-visualizer",
+    "name": "MIDI Visualizer",
+    "version": "1.0.0",
+    "minAppVersion": "0.15.0",
+    "description": "Visualizes embedded MIDI files as a piano roll.",
+    "author": "You",
+    "authorUrl": "",
+    "isDesktopOnly": false
+}

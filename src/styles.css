@@ -1,0 +1,23 @@
+.midi-roll-wrapper {
+    /* Transparent background so it blends with the theme */
+    background-color: transparent;
+    padding: 0;
+    margin-bottom: 1rem;
+    overflow: hidden; /* Prevent scrollbars from appearing unnecessarily */
+}
+
+.midi-roll-wrapper h4 {
+    margin-top: 0;
+    margin-bottom: 8px;
+    font-size: 0.85em;
+    color: var(--text-muted);
+    font-family: monospace; /* Gives it a technical feel */
+}
+
+.midi-roll-canvas {
+    display: block;
+    /* Ensure it respects the container width */
+    max-width: 100%;
+    border-radius: 4px;
+    border: 1px solid var(--background-modifier-border);
+}
