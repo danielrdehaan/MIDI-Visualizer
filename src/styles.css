@@ -1,23 +1,201 @@
+/* ============================================
+   MIDI Visualizer - Theme Variables
+   ============================================ */
+
 .midi-roll-wrapper {
-    /* Transparent background so it blends with the theme */
+    /* Layout */
     background-color: transparent;
     padding: 0;
     margin-bottom: 1rem;
-    overflow: hidden; /* Prevent scrollbars from appearing unnecessarily */
+    overflow: hidden;
 }
 
+/* ============================================
+   Dark Mode (default)
+   ============================================ */
+.theme-dark .midi-roll-wrapper {
+    /* Canvas colors */
+    --midi-bg: var(--background-primary-alt, #222);
+    --midi-bg-black-row: var(--background-secondary-alt, #1a1a1a);
+    --midi-grid-line: var(--background-modifier-border, #333);
+    --midi-grid-line-measure: var(--background-modifier-border-hover, #444);
+    
+    /* Piano keys */
+    --midi-key-white: #e8e8e8;
+    --midi-key-black: #1a1a1a;
+    --midi-key-border: var(--background-modifier-border, #555);
+    --midi-key-label: #222;
+    
+    /* Ruler */
+    --midi-ruler-bg: var(--background-secondary, #333);
+    --midi-ruler-line: var(--text-muted, #999);
+    --midi-ruler-text: var(--text-normal, #ccc);
+    --midi-ruler-beat: var(--text-faint, #666);
+    --midi-ruler-corner: var(--background-primary-alt, #222);
+    
+    /* Playhead */
+    --midi-playhead: #ff4444;
+    
+    /* Notes */
+    --midi-note-saturation: 70%;
+    --midi-note-lightness: 60%;
+    --midi-note-label: #000;
+    
+    /* Controls bar */
+    --midi-controls-bg: var(--background-secondary, #2a2a2a);
+    --midi-controls-border: var(--background-modifier-border, #444);
+    --midi-button-bg: var(--interactive-normal, #444);
+    --midi-button-bg-hover: var(--interactive-hover, #555);
+    --midi-button-text: var(--text-normal, #fff);
+    --midi-button-border: var(--background-modifier-border, #555);
+    --midi-slider-accent: var(--interactive-accent, #888);
+    --midi-icon-color: var(--text-muted, #ccc);
+}
+
+/* ============================================
+   Light Mode
+   ============================================ */
+.theme-light .midi-roll-wrapper {
+    /* Canvas colors */
+    --midi-bg: var(--background-primary-alt, #f5f5f5);
+    --midi-bg-black-row: var(--background-secondary-alt, #e0e0e0);
+    --midi-grid-line: var(--background-modifier-border, #ccc);
+    --midi-grid-line-measure: var(--background-modifier-border-hover, #aaa);
+    
+    /* Piano keys */
+    --midi-key-white: #ffffff;
+    --midi-key-black: #222222;
+    --midi-key-border: var(--background-modifier-border, #999);
+    --midi-key-label: #333;
+    
+    /* Ruler */
+    --midi-ruler-bg: var(--background-secondary, #e0e0e0);
+    --midi-ruler-line: var(--text-muted, #666);
+    --midi-ruler-text: var(--text-normal, #333);
+    --midi-ruler-beat: var(--text-faint, #888);
+    --midi-ruler-corner: var(--background-primary-alt, #eaeaea);
+    
+    /* Playhead */
+    --midi-playhead: #dd2222;
+    
+    /* Notes - slightly more saturated for light backgrounds */
+    --midi-note-saturation: 75%;
+    --midi-note-lightness: 50%;
+    --midi-note-label: #fff;
+    
+    /* Controls bar */
+    --midi-controls-bg: var(--background-secondary, #e8e8e8);
+    --midi-controls-border: var(--background-modifier-border, #ccc);
+    --midi-button-bg: var(--interactive-normal, #d0d0d0);
+    --midi-button-bg-hover: var(--interactive-hover, #c0c0c0);
+    --midi-button-text: var(--text-normal, #222);
+    --midi-button-border: var(--background-modifier-border, #aaa);
+    --midi-slider-accent: var(--interactive-accent, #666);
+    --midi-icon-color: var(--text-muted, #555);
+}
+
+/* ============================================
+   Fallback for when no theme class is present
+   ============================================ */
+.midi-roll-wrapper {
+    --midi-bg: var(--background-primary-alt, #222);
+    --midi-bg-black-row: var(--background-secondary-alt, #1a1a1a);
+    --midi-grid-line: var(--background-modifier-border, #333);
+    --midi-grid-line-measure: var(--background-modifier-border-hover, #444);
+    --midi-key-white: #e8e8e8;
+    --midi-key-black: #1a1a1a;
+    --midi-key-border: var(--background-modifier-border, #555);
+    --midi-key-label: #222;
+    --midi-ruler-bg: var(--background-secondary, #333);
+    --midi-ruler-line: var(--text-muted, #999);
+    --midi-ruler-text: var(--text-normal, #ccc);
+    --midi-ruler-beat: var(--text-faint, #666);
+    --midi-ruler-corner: var(--background-primary-alt, #222);
+    --midi-playhead: #ff4444;
+    --midi-note-saturation: 70%;
+    --midi-note-lightness: 60%;
+    --midi-note-label: #000;
+    --midi-controls-bg: var(--background-secondary, #2a2a2a);
+    --midi-controls-border: var(--background-modifier-border, #444);
+    --midi-button-bg: var(--interactive-normal, #444);
+    --midi-button-bg-hover: var(--interactive-hover, #555);
+    --midi-button-text: var(--text-normal, #fff);
+    --midi-button-border: var(--background-modifier-border, #555);
+    --midi-slider-accent: var(--interactive-accent, #888);
+    --midi-icon-color: var(--text-muted, #ccc);
+}
+
+/* ============================================
+   Component Styles
+   ============================================ */
 .midi-roll-wrapper h4 {
     margin-top: 0;
     margin-bottom: 8px;
     font-size: 0.85em;
     color: var(--text-muted);
-    font-family: monospace; /* Gives it a technical feel */
+    font-family: monospace;
 }
 
 .midi-roll-canvas {
     display: block;
-    /* Ensure it respects the container width */
     max-width: 100%;
-    border-radius: 4px;
+    border-radius: 4px 4px 0 0;
     border: 1px solid var(--background-modifier-border);
+    border-bottom: none;
+}
+
+/* When there's no audio (no controls bar), restore full border radius */
+.midi-roll-wrapper:not(:has(.midi-bottom-bar)) .midi-roll-canvas {
+    border-radius: 4px;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+/* Controls bar */
+.midi-bottom-bar {
+    width: 100%;
+    height: 36px;
+    background: var(--midi-controls-bg);
+    border: 1px solid var(--midi-controls-border);
+    border-top: none;
+    border-radius: 0 0 4px 4px;
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    gap: 15px;
+}
+
+.midi-bottom-bar button {
+    cursor: pointer;
+    padding: 4px 12px;
+    background: var(--midi-button-bg);
+    color: var(--midi-button-text);
+    border: 1px solid var(--midi-button-border);
+    border-radius: 3px;
+    font-size: 12px;
+    font-weight: bold;
+    min-width: 60px;
+    transition: background 0.15s ease;
+}
+
+.midi-bottom-bar button:hover {
+    background: var(--midi-button-bg-hover);
+}
+
+.midi-volume-group {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.midi-volume-icon {
+    font-size: 14px;
+    color: var(--midi-icon-color);
+    cursor: default;
+}
+
+.midi-volume-slider {
+    width: 80px;
+    cursor: pointer;
+    height: 4px;
+    accent-color: var(--midi-slider-accent);
 }

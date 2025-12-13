@@ -9,24 +9,30 @@ interface PianoRollOptions {
 }
 
 interface RenderNote {
-    time: number;
-    duration: number;
+    tick: number;
+    durationTicks: number;
     midi: number;
     hue: number;
 }
 
 interface MeasureInfo {
     index: number;
-    startTime: number;
-    duration: number;
+    tick: number;
     numerator: number;
     denominator: number;
+}
+
+interface TempoEvent {
+    ticks: number;
+    bpm: number;
+    time: number;
 }
 
 export default class MidiVisualizerPlugin extends Plugin {
 
     async onload() {
-        this.registerMarkdownCodeBlockProcessor("midi", async (source, el, ctx) => {
+        // CHANGED: "midi" -> "midiviz" to avoid conflicts
+        this.registerMarkdownCodeBlockProcessor("midiviz", async (source, el, ctx) => {
             const lines = source.split("\n").map(line => line.trim()).filter(line => line.length > 0);
             
             let filename = "";
@@ -35,19 +41,22 @@ export default class MidiVisualizerPlugin extends Plugin {
             let accidentals: 'sharp' | 'flat' = 'sharp';
             let viewportHeight = 400;
 
+            // Legacy support: if line 1 has no colon, assume it's the midi file
             if (lines.length === 1 && !lines[0].includes(":")) {
                 filename = lines[0];
             } else {
                 lines.forEach(line => {
                     if (!line.includes(":")) {
-                        filename = line;
+                        // If we find a stray line, assume midi file if not set yet
+                        if (!filename) filename = line;
                         return;
                     }
                     const parts = line.split(":");
                     const key = parts[0].trim().toLowerCase();
                     const value = parts.slice(1).join(":").trim();
 
-                    if (key === "file") filename = value;
+                    // CHANGED: "file" -> "midi"
+                    if (key === "midi" || key === "file") filename = value;
                     if (key === "audio") audioFilename = value;
                     if (key === "names") showNames = (value.toLowerCase() === "true");
                     if (key === "accidentals") accidentals = (value.toLowerCase().startsWith("flat")) ? 'flat' : 'sharp';
@@ -85,90 +94,94 @@ export default class MidiVisualizerPlugin extends Plugin {
         return `${names[midi % 12]}${Math.floor(midi / 12) - 1}`;
     }
 
-    findStartIndex(notes: RenderNote[], startTime: number): number {
+    findStartIndex(notes: RenderNote[], startTick: number): number {
         let low = 0;
         let high = notes.length - 1;
         while (low <= high) {
             const mid = Math.floor((low + high) / 2);
-            if (notes[mid].time + notes[mid].duration < startTime) low = mid + 1;
+            if (notes[mid].tick + notes[mid].durationTicks < startTick) low = mid + 1;
             else high = mid - 1;
         }
         return low;
     }
 
-    // --- ACCURATE TIME CONVERSION ---
-    ticksToSeconds(tick: number, midi: Midi): number {
-        const tempos = midi.header.tempos;
-        const ppq = midi.header.ppq;
-        
-        if (tempos.length === 0) return (tick / ppq) * (60 / 120);
+    // --- TEMPO MAP ENGINE ---
+    private customTempoMap: TempoEvent[] = [];
+    private ppq: number = 480;
 
-        // Find the tempo event that precedes this tick
-        let i = 0;
-        while (i < tempos.length - 1 && tempos[i + 1].ticks <= tick) {
-            i++;
+    recalculateTempoMap(midi: Midi) {
+        this.ppq = midi.header.ppq;
+        const rawTempos = midi.header.tempos;
+        rawTempos.sort((a, b) => a.ticks - b.ticks);
+
+        this.customTempoMap = [];
+        
+        if (rawTempos.length === 0 || rawTempos[0].ticks > 0) {
+            this.customTempoMap.push({ ticks: 0, bpm: 120, time: 0 });
         }
-        
-        const tempo = tempos[i];
-        const ticksSinceTempo = tick - tempo.ticks;
-        const secondsPerTick = 60 / (tempo.bpm * ppq);
-        
-        // Time = Time at Start of Tempo + (Ticks passed * Seconds per tick)
-        return tempo.time + (ticksSinceTempo * secondsPerTick);
+
+        let currentTime = 0;
+        let lastTicks = 0;
+        let lastBpm = (rawTempos.length > 0 && rawTempos[0].ticks === 0) ? rawTempos[0].bpm : 120;
+
+        for (const t of rawTempos) {
+            if (t.ticks === 0) { lastBpm = t.bpm; continue; }
+
+            const deltaTicks = t.ticks - lastTicks;
+            const secondsPerTick = 60 / (lastBpm * this.ppq);
+            currentTime += deltaTicks * secondsPerTick;
+
+            this.customTempoMap.push({
+                ticks: t.ticks,
+                bpm: t.bpm,
+                time: currentTime
+            });
+
+            lastTicks = t.ticks;
+            lastBpm = t.bpm;
+        }
     }
 
-    // --- DRIFT-FREE MEASURE MAP ---
-    buildMeasureMap(midi: Midi): MeasureInfo[] {
-        const map: MeasureInfo[] = [];
-        const ppq = midi.header.ppq;
-        const timeSigs = midi.header.timeSignatures;
-        
-        // Find total length in ticks (use last note or arbitrary buffer)
-        let totalTicks = 0;
-        midi.tracks.forEach(t => {
-            t.notes.forEach(n => {
-                if (n.ticks + n.durationTicks > totalTicks) totalTicks = n.ticks + n.durationTicks;
-            });
-        });
-        totalTicks += (ppq * 4 * 10); // Buffer 10 bars
+    secondsToTicks(time: number): number {
+        let low = 0;
+        let high = this.customTempoMap.length - 1;
+        let idx = 0;
 
-        let currentTick = 0;
-        let measureIndex = 0;
-        let sigIndex = 0;
-
-        let currentNum = timeSigs.length > 0 ? timeSigs[0].timeSignature[0] : 4;
-        let currentDenom = timeSigs.length > 0 ? timeSigs[0].timeSignature[1] : 4;
-
-        while (currentTick < totalTicks) {
-            // Update Time Signature if needed
-            // We check if a time sig event happened at or before this exact bar line
-            while (sigIndex < timeSigs.length && timeSigs[sigIndex].ticks <= currentTick) {
-                currentNum = timeSigs[sigIndex].timeSignature[0];
-                currentDenom = timeSigs[sigIndex].timeSignature[1];
-                sigIndex++;
+        while (low <= high) {
+            const mid = Math.floor((low + high) / 2);
+            if (this.customTempoMap[mid].time <= time) {
+                idx = mid;
+                low = mid + 1;
+            } else {
+                high = mid - 1;
             }
-
-            // Calculate Measure Length in TICKS (Integers = No Drift)
-            // (Numerator * 4 / Denominator) * PPQ
-            const ticksPerMeasure = (currentNum * 4 / currentDenom) * ppq;
-            
-            // Convert exact Start/End ticks to Seconds using full Tempo Map
-            const startSeconds = this.ticksToSeconds(currentTick, midi);
-            const endSeconds = this.ticksToSeconds(currentTick + ticksPerMeasure, midi);
-            
-            map.push({
-                index: measureIndex,
-                startTime: startSeconds,
-                duration: endSeconds - startSeconds,
-                numerator: currentNum,
-                denominator: currentDenom
-            });
-
-            currentTick += ticksPerMeasure;
-            measureIndex++;
         }
 
-        return map;
+        const event = this.customTempoMap[idx];
+        const timeDelta = time - event.time;
+        const secondsPerTick = 60 / (event.bpm * this.ppq);
+        return event.ticks + (timeDelta / secondsPerTick);
+    }
+
+    ticksToSeconds(tick: number): number {
+        let low = 0;
+        let high = this.customTempoMap.length - 1;
+        let idx = 0;
+
+        while (low <= high) {
+            const mid = Math.floor((low + high) / 2);
+            if (this.customTempoMap[mid].ticks <= tick) {
+                idx = mid;
+                low = mid + 1;
+            } else {
+                high = mid - 1;
+            }
+        }
+
+        const event = this.customTempoMap[idx];
+        const delta = tick - event.ticks;
+        const secondsPerTick = 60 / (event.bpm * this.ppq);
+        return event.time + (delta * secondsPerTick);
     }
 
     renderInteractivePianoRoll(midi: Midi, container: HTMLElement, options: PianoRollOptions) {
@@ -176,28 +189,72 @@ export default class MidiVisualizerPlugin extends Plugin {
         wrapper.style.display = "flex";
         wrapper.style.flexDirection = "column";
 
-        // --- 1. SETUP DATA ---
+        // Helper to read CSS variables from the wrapper
+        const getColor = (varName: string, fallback: string): string => {
+            const value = getComputedStyle(wrapper).getPropertyValue(varName).trim();
+            return value || fallback;
+        };
+
+        // 1. Build Data
+        this.recalculateTempoMap(midi);
+
         const allNotes: RenderNote[] = [];
         let minNote = 128;
         let maxNote = 0;
+        let totalTicks = 0;
 
         midi.tracks.forEach((track, index) => {
             const hue = (index * 137) % 360;
             track.notes.forEach(note => {
                 if (note.midi < minNote) minNote = note.midi;
                 if (note.midi > maxNote) maxNote = note.midi;
-                allNotes.push({ time: note.time, duration: note.duration, midi: note.midi, hue: hue });
+                const endTick = note.ticks + note.durationTicks;
+                if (endTick > totalTicks) totalTicks = endTick;
+                
+                allNotes.push({
+                    tick: note.ticks,
+                    durationTicks: note.durationTicks,
+                    midi: note.midi,
+                    hue: hue
+                });
             });
         });
-        allNotes.sort((a, b) => a.time - b.time);
+        allNotes.sort((a, b) => a.tick - b.tick);
         minNote = Math.max(0, minNote - 2);
         maxNote = Math.min(127, maxNote + 2);
-        const totalDuration = midi.duration || 1;
+        
+        const ppq = midi.header.ppq;
+        const songEndTick = totalTicks;
+        totalTicks += ppq * 4; // Visual buffer
 
-        // Build Accurate Grid
-        const measureMap = this.buildMeasureMap(midi);
+        // 2. Build Grid
+        const measureMap: MeasureInfo[] = [];
+        const timeSigs = midi.header.timeSignatures;
+        if (timeSigs.length === 0) timeSigs.push({ ticks: 0, timeSignature: [4, 4] } as any);
 
-        // --- 2. AUDIO SETUP ---
+        let measureIndex = 0;
+        for (let i = 0; i < timeSigs.length; i++) {
+            const currentSig = timeSigs[i];
+            const nextSig = timeSigs[i + 1];
+            const startTick = currentSig.ticks;
+            const endTick = nextSig ? nextSig.ticks : totalTicks;
+            const num = currentSig.timeSignature[0];
+            const denom = currentSig.timeSignature[1];
+            const ticksPerMeasure = (num * 4 / denom) * this.ppq;
+
+            let cursor = startTick;
+            while (cursor < endTick) {
+                measureMap.push({
+                    index: measureIndex++,
+                    tick: cursor,
+                    numerator: num,
+                    denominator: denom
+                });
+                cursor += ticksPerMeasure;
+            }
+        }
+
+        // 3. Audio & UI
         let audioElement: HTMLAudioElement | null = null;
         let isPlaying = false;
         let playBtn: HTMLElement | null = null;
@@ -223,38 +280,66 @@ export default class MidiVisualizerPlugin extends Plugin {
         const ctx = canvas.getContext("2d", { alpha: false });
         if (!ctx) return;
 
-        // --- 3. OFFSCREEN CACHE ---
+        // 4. Offscreen Background
         const bgCanvas = document.createElement("canvas");
         bgCanvas.width = width;
         bgCanvas.height = 128 * noteHeight;
         const bgCtx = bgCanvas.getContext("2d", { alpha: false });
-
-        if (bgCtx) {
-            bgCtx.fillStyle = "#222";
+        
+        // Theme colors object - will be updated on theme change
+        let colors = {
+            bg: '', bgBlackRow: '', gridLine: '', keyWhite: '', keyBlack: '',
+            keyBorder: '', keyLabel: '', rulerBg: '', rulerLine: '', rulerText: '',
+            rulerBeat: '', rulerCorner: '', gridLineMeasure: '', playhead: '',
+            noteSaturation: '', noteLightness: '', noteLabel: '',
+        };
+        
+        // Function to read all theme colors
+        const updateColors = () => {
+            colors = {
+                bg: getColor('--midi-bg', '#222'),
+                bgBlackRow: getColor('--midi-bg-black-row', '#1a1a1a'),
+                gridLine: getColor('--midi-grid-line', '#333'),
+                keyWhite: getColor('--midi-key-white', '#fff'),
+                keyBlack: getColor('--midi-key-black', '#000'),
+                keyBorder: getColor('--midi-key-border', '#555'),
+                keyLabel: getColor('--midi-key-label', '#000'),
+                rulerBg: getColor('--midi-ruler-bg', '#333'),
+                rulerLine: getColor('--midi-ruler-line', '#999'),
+                rulerText: getColor('--midi-ruler-text', '#ccc'),
+                rulerBeat: getColor('--midi-ruler-beat', '#555'),
+                rulerCorner: getColor('--midi-ruler-corner', '#222'),
+                gridLineMeasure: getColor('--midi-grid-line-measure', '#444'),
+                playhead: getColor('--midi-playhead', '#ff3333'),
+                noteSaturation: getColor('--midi-note-saturation', '70%'),
+                noteLightness: getColor('--midi-note-lightness', '60%'),
+                noteLabel: getColor('--midi-note-label', '#000'),
+            };
+        };
+        
+        // Function to redraw the background canvas with current colors
+        const redrawBackground = () => {
+            if (!bgCtx) return;
+            bgCtx.fillStyle = colors.bg;
             bgCtx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
             bgCtx.lineWidth = 1;
             const noteAreaWidth = bgCanvas.width - keyWidth;
-
             for (let i = 0; i < 128; i++) {
                 const currentMidi = 127 - i;
                 const y = i * noteHeight;
                 const isBlackKey = [1, 3, 6, 8, 10].includes(currentMidi % 12);
-                
                 if (isBlackKey) {
-                    bgCtx.fillStyle = "#1a1a1a";
+                    bgCtx.fillStyle = colors.bgBlackRow;
                     bgCtx.fillRect(keyWidth, y, noteAreaWidth, noteHeight);
                 }
-                bgCtx.strokeStyle = "#333";
-                bgCtx.beginPath();
-                bgCtx.moveTo(keyWidth, y);
-                bgCtx.lineTo(bgCanvas.width, y);
-                bgCtx.stroke();
-                bgCtx.fillStyle = isBlackKey ? "#000" : "#fff";
+                bgCtx.strokeStyle = colors.gridLine;
+                bgCtx.beginPath(); bgCtx.moveTo(keyWidth, y); bgCtx.lineTo(bgCanvas.width, y); bgCtx.stroke();
+                bgCtx.fillStyle = isBlackKey ? colors.keyBlack : colors.keyWhite;
                 bgCtx.fillRect(0, y, keyWidth, noteHeight);
-                bgCtx.strokeStyle = "#555";
+                bgCtx.strokeStyle = colors.keyBorder;
                 bgCtx.strokeRect(0, y, keyWidth, noteHeight);
                 if (currentMidi % 12 === 0) {
-                    bgCtx.fillStyle = "#000";
+                    bgCtx.fillStyle = colors.keyLabel;
                     bgCtx.font = "10px sans-serif";
                     bgCtx.textAlign = "right";
                     bgCtx.textBaseline = "alphabetic";
@@ -262,44 +347,54 @@ export default class MidiVisualizerPlugin extends Plugin {
                     bgCtx.fillText(`C${octave}`, keyWidth - 3, y + noteHeight - 3);
                 }
             }
-        }
+        };
+        
+        // Initial color read and background draw
+        updateColors();
+        redrawBackground();
+        
+        // Watch for theme changes on document.body
+        const themeObserver = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                if (mutation.attributeName === 'class') {
+                    updateColors();
+                    redrawBackground();
+                    requestAnimationFrame(draw);
+                    break;
+                }
+            }
+        });
+        themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+        
+        // Register cleanup for when the element is removed from DOM
+        this.register(() => themeObserver.disconnect());
 
-        // --- 4. CONTROLS BAR ---
+        // 5. Controls UI
         if (audioElement) {
             const controlsBar = wrapper.createEl("div", { cls: "midi-bottom-bar" });
-            Object.assign(controlsBar.style, {
-                width: "100%", height: "36px", background: "#2a2a2a",
-                borderTop: "1px solid #444", borderBottomLeftRadius: "4px", borderBottomRightRadius: "4px",
-                display: "flex", alignItems: "center", padding: "0 10px", gap: "15px"
-            });
-
             playBtn = controlsBar.createEl("button", { text: "▶ Play" });
-            Object.assign(playBtn.style, {
-                cursor: "pointer", padding: "4px 12px", background: "#444", color: "#fff",
-                border: "1px solid #555", borderRadius: "3px", fontSize: "12px", fontWeight: "bold", minWidth: "60px"
-            });
             playBtn.onclick = () => togglePlay();
-
-            const volGroup = controlsBar.createEl("div");
-            volGroup.style.display = "flex"; volGroup.style.alignItems = "center"; volGroup.style.gap = "5px";
-            const volIcon = volGroup.createEl("span", { text: "🔊" });
-            volIcon.style.fontSize = "14px"; volIcon.style.color = "#ccc"; volIcon.style.cursor = "default";
-            const volSlider = volGroup.createEl("input");
+            const volGroup = controlsBar.createEl("div", { cls: "midi-volume-group" });
+            volGroup.createEl("span", { text: "🔊", cls: "midi-volume-icon" });
+            const volSlider = volGroup.createEl("input", { cls: "midi-volume-slider" });
             volSlider.type = "range"; volSlider.min = "0"; volSlider.max = "1"; volSlider.step = "0.01"; volSlider.value = "1";
-            Object.assign(volSlider.style, { width: "80px", cursor: "pointer", height: "4px", accentColor: "#666" });
             volSlider.oninput = (e) => { if (audioElement) audioElement.volume = parseFloat((e.target as HTMLInputElement).value); };
         }
 
-        // --- 5. STATE ---
+        // 6. View State
         const noteAreaWidth = canvas.width - keyWidth;
-        const minZoom = noteAreaWidth / totalDuration;
-        const maxZoom = 2000;
-        let zoomX = minZoom;
+        const minZoom = noteAreaWidth / songEndTick;
+        // Default Zoom: Show roughly 16 beats (4 bars of 4/4) or fit song if smaller
+        const readableTicks = ppq * 4 * 4;
+        const readableZoom = noteAreaWidth / readableTicks;
+        // Start closer, but not closer than 2.0, and not further than minZoom
+        let zoomX = Math.max(minZoom, Math.min(readableZoom, 2.0));
+        const maxZoom = 5.0;
         
         const centerNote = (minNote + maxNote) / 2;
         const centerPixel = (127 - centerNote) * noteHeight;
         let scrollY = Math.max(0, centerPixel - (options.viewportHeight / 2));
-        let scrollX = 0;
+        let scrollTick = 0;
         
         let isDraggingRuler = false;
         let isDraggingPlayhead = false;
@@ -318,167 +413,151 @@ export default class MidiVisualizerPlugin extends Plugin {
             }
         };
 
-        const seekTo = (time: number) => {
+        const seekTo = (tick: number) => {
             if (audioElement) {
-                time = Math.max(0, Math.min(time, totalDuration));
-                audioElement.currentTime = time;
+                const time = this.ticksToSeconds(tick);
+                audioElement.currentTime = Math.max(0, time);
             }
         };
 
         const applyConstraints = () => {
             zoomX = Math.max(minZoom, Math.min(zoomX, maxZoom));
-            const visibleDuration = (canvas.width - keyWidth) / zoomX;
-            const maxScrollX = Math.max(0, totalDuration - visibleDuration);
-            scrollX = Math.max(0, Math.min(scrollX, maxScrollX));
+            const visibleTicks = (canvas.width - keyWidth) / zoomX;
+            const maxScroll = Math.max(0, songEndTick - visibleTicks);
+            scrollTick = Math.max(0, Math.min(scrollTick, maxScroll));
         };
 
-        // --- 6. RENDER LOOP ---
+        // --- RENDER LOOP ---
         const draw = () => {
             if (isPlaying && audioElement && !isDraggingRuler && !isDraggingPlayhead) {
-                const playTime = audioElement.currentTime;
-                const visibleDuration = (canvas.width - keyWidth) / zoomX;
-                let targetScrollX = playTime - (visibleDuration / 2);
-                const maxScrollX = Math.max(0, totalDuration - visibleDuration);
-                targetScrollX = Math.max(0, Math.min(targetScrollX, maxScrollX));
-                scrollX = targetScrollX;
+                const playTick = this.secondsToTicks(audioElement.currentTime);
+                const visibleTicks = (canvas.width - keyWidth) / zoomX;
+                let targetScroll = playTick - (visibleTicks / 2);
+                const maxScroll = Math.max(0, songEndTick - visibleTicks);
+                scrollTick = Math.max(0, Math.min(targetScroll, maxScroll));
             }
 
-            // A. BACKGROUND
-            const bgY = rulerHeight - scrollY;
+            const bgY = (rulerHeight - scrollY) | 0;
             ctx.drawImage(bgCanvas, 0, bgY);
-            if (bgY > 0) { ctx.fillStyle = "#222"; ctx.fillRect(0, 0, width, bgY); }
+            if (bgY > 0) { ctx.fillStyle = colors.bg; ctx.fillRect(0, 0, width, bgY); }
             if (bgY + bgCanvas.height < canvas.height) {
-                ctx.fillStyle = "#222";
+                ctx.fillStyle = colors.bg;
                 ctx.fillRect(0, bgY + bgCanvas.height, width, canvas.height - (bgY + bgCanvas.height));
             }
 
-            // B. NOTES
-            const startVisibleTime = scrollX;
-            const endVisibleTime = scrollX + (canvas.width / zoomX);
-            let i = this.findStartIndex(allNotes, startVisibleTime);
+            const startTick = scrollTick;
+            const endTick = scrollTick + (canvas.width / zoomX);
+
+            let i = this.findStartIndex(allNotes, startTick);
+            let currentHue = -1;
 
             for (; i < allNotes.length; i++) {
                 const note = allNotes[i];
-                if (note.time > endVisibleTime) break;
-                if (note.time + note.duration < startVisibleTime) continue;
+                if (note.tick > endTick) break;
+                if (note.tick + note.durationTicks < startTick) continue;
 
-                const x = keyWidth + (note.time - scrollX) * zoomX;
-                const w = note.duration * zoomX;
-                const y = ((127 - note.midi) * noteHeight) - scrollY + rulerHeight;
+                const x = (keyWidth + (note.tick - scrollTick) * zoomX) | 0;
+                const w = (note.durationTicks * zoomX);
+                const y = (((127 - note.midi) * noteHeight) - scrollY + rulerHeight) | 0;
 
                 if (y + noteHeight < rulerHeight || y > canvas.height) continue;
 
-                ctx.fillStyle = `hsl(${note.hue}, 70%, 60%)`;
-                ctx.strokeStyle = `hsl(${note.hue}, 70%, 30%)`;
+                if (note.hue !== currentHue) {
+                    ctx.fillStyle = `hsl(${note.hue}, ${colors.noteSaturation}, ${colors.noteLightness})`;
+                    currentHue = note.hue;
+                }
+
                 const drawX = Math.max(keyWidth, x);
-                const drawW = Math.min(w, w - (keyWidth - x));
+                let drawW = Math.max(1, w) | 0; // Ensure at least 1px width
+                
+                if (drawW > 2) {
+                    drawW = Math.min(drawW, drawW - (keyWidth - x));
+                    if (drawW > 2) drawW -= 1;
+                }
 
                 if (drawW > 0) {
                     ctx.fillRect(drawX, y + 1, drawW, noteHeight - 2);
-                    ctx.strokeRect(drawX, y + 1, drawW, noteHeight - 2);
-
-                    if (options.showNames && drawW > 15) {
+                    if (options.showNames && drawW > 16) {
                         const name = this.getNoteName(note.midi, options.accidentals);
-                        if (drawW > 12) {
-                            const textW = ctx.measureText(name).width;
-                            if (drawW > textW + 4) {
-                                ctx.fillStyle = "#000";
-                                ctx.font = "10px sans-serif";
-                                ctx.textAlign = "left";
-                                ctx.textBaseline = "middle";
-                                ctx.fillText(name, drawX + 2, y + (noteHeight/2));
-                            }
+                        if (drawW > 14) {
+                            ctx.save();
+                            ctx.fillStyle = colors.noteLabel;
+                            ctx.font = "10px sans-serif";
+                            ctx.textAlign = "left";
+                            ctx.textBaseline = "middle";
+                            ctx.fillText(name, drawX + 2, y + (noteHeight/2));
+                            ctx.restore();
+                            currentHue = -1;
                         }
                     }
                 }
             }
 
-            // C. RULER
-            ctx.fillStyle = "#333";
+            ctx.fillStyle = colors.rulerBg;
             ctx.fillRect(keyWidth, 0, noteAreaWidth, rulerHeight);
+            ctx.textAlign = "left"; ctx.textBaseline = "top";
             
-            ctx.textAlign = "left";
-            ctx.textBaseline = "top";
-            let showBeats = zoomX > 20;
+            const showBeats = (ppq * zoomX) > 20;
 
             for (const m of measureMap) {
-                if (m.startTime + m.duration < startVisibleTime) continue;
-                if (m.startTime > endVisibleTime) break;
+                if (m.tick > endTick) break;
+                const measureDuration = (m.numerator * 4 / m.denominator) * ppq;
+                if (m.tick + measureDuration < startTick) continue;
 
-                const screenX = keyWidth + (m.startTime - scrollX) * zoomX;
+                const screenX = (keyWidth + (m.tick - scrollTick) * zoomX) | 0;
                 
-                // Bar Line
-                ctx.strokeStyle = "#999";
-                ctx.beginPath();
-                ctx.moveTo(screenX, 0);
-                ctx.lineTo(screenX, rulerHeight);
-                ctx.stroke();
-
-                ctx.fillStyle = "#ccc";
-                ctx.fillText((m.index + 1).toString(), screenX + 4, 4);
-
-                ctx.save();
-                ctx.strokeStyle = "#444";
-                ctx.globalAlpha = 0.5;
-                ctx.beginPath();
-                ctx.moveTo(screenX, rulerHeight);
-                ctx.lineTo(screenX, canvas.height);
-                ctx.stroke();
-                ctx.restore();
+                if (screenX >= keyWidth) {
+                    ctx.strokeStyle = colors.rulerLine;
+                    ctx.beginPath(); ctx.moveTo(screenX, 0); ctx.lineTo(screenX, rulerHeight); ctx.stroke();
+                    ctx.fillStyle = colors.rulerText;
+                    ctx.fillText((m.index + 1).toString(), screenX + 4, 4);
+                }
+                
+                if (screenX >= keyWidth) {
+                    ctx.save();
+                    ctx.strokeStyle = colors.gridLineMeasure; ctx.globalAlpha = 0.5;
+                    ctx.beginPath(); ctx.moveTo(screenX, rulerHeight); ctx.lineTo(screenX, canvas.height); ctx.stroke();
+                    ctx.restore();
+                }
 
                 if (showBeats) {
-                    const beatDuration = m.duration / m.numerator;
+                    const beatSize = (ppq * 4) / m.denominator;
                     for (let b = 1; b < m.numerator; b++) {
-                        const beatTime = m.startTime + (b * beatDuration);
-                        if (beatTime > endVisibleTime) break;
-                        
-                        const beatX = keyWidth + (beatTime - scrollX) * zoomX;
-                        ctx.strokeStyle = "#555";
-                        ctx.beginPath();
-                        ctx.moveTo(beatX, rulerHeight - 10);
-                        ctx.lineTo(beatX, rulerHeight);
-                        ctx.stroke();
+                        const beatTick = m.tick + (b * beatSize);
+                        if (beatTick > endTick) break;
+                        const beatX = (keyWidth + (beatTick - scrollTick) * zoomX) | 0;
+                        if (beatX >= keyWidth) {
+                            ctx.strokeStyle = colors.rulerBeat;
+                            ctx.beginPath(); ctx.moveTo(beatX, rulerHeight - 10); ctx.lineTo(beatX, rulerHeight); ctx.stroke();
+                        }
                     }
                 }
             }
 
-            // D. PLAYHEAD
             if (audioElement) {
-                const playTime = audioElement.currentTime;
-                const playheadX = keyWidth + (playTime - scrollX) * zoomX;
+                const playTick = this.secondsToTicks(audioElement.currentTime);
+                const playheadX = (keyWidth + (playTick - scrollTick) * zoomX) | 0;
 
                 if (playheadX >= keyWidth && playheadX <= canvas.width) {
-                    ctx.strokeStyle = "#ff3333";
-                    ctx.lineWidth = 2;
-                    ctx.beginPath();
-                    ctx.moveTo(playheadX, 0);
-                    ctx.lineTo(playheadX, canvas.height);
-                    ctx.stroke();
-                    ctx.fillStyle = "#ff3333";
-                    ctx.beginPath();
-                    ctx.moveTo(playheadX - 8, 0);
-                    ctx.lineTo(playheadX + 8, 0);
-                    ctx.lineTo(playheadX, 12);
-                    ctx.fill();
+                    ctx.strokeStyle = colors.playhead; ctx.lineWidth = 2;
+                    ctx.beginPath(); ctx.moveTo(playheadX, 0); ctx.lineTo(playheadX, canvas.height); ctx.stroke();
+                    ctx.fillStyle = colors.playhead;
+                    ctx.beginPath(); ctx.moveTo(playheadX - 8, 0); ctx.lineTo(playheadX + 8, 0); ctx.lineTo(playheadX, 12); ctx.fill();
                 }
             }
 
-            // E. CORNER
-            ctx.fillStyle = "#222";
-            ctx.fillRect(0, 0, keyWidth, rulerHeight);
-            ctx.strokeStyle = "#000";
-            ctx.strokeRect(0, 0, keyWidth, rulerHeight);
+            ctx.fillStyle = colors.rulerCorner; ctx.fillRect(0, 0, keyWidth, rulerHeight);
+            ctx.strokeStyle = colors.keyBlack; ctx.strokeRect(0, 0, keyWidth, rulerHeight);
 
             if (isPlaying || audioElement) requestAnimationFrame(draw);
         };
 
-        // --- 7. EVENT LISTENERS ---
         if (audioElement) {
             audioElement.addEventListener('ended', () => {
                 isPlaying = false;
                 if (playBtn) playBtn.innerText = "▶ Play";
                 audioElement.currentTime = 0;
-                scrollX = 0;
+                scrollTick = 0;
                 requestAnimationFrame(draw);
             });
         }
@@ -488,12 +567,12 @@ export default class MidiVisualizerPlugin extends Plugin {
             if (e.ctrlKey || e.metaKey) {
                 const zoomFactor = 1.1;
                 const mouseX = e.offsetX - keyWidth;
-                const timeAtMouse = scrollX + (mouseX / zoomX);
+                const tickAtMouse = scrollTick + (mouseX / zoomX);
                 if (e.deltaY < 0) zoomX *= zoomFactor; else zoomX /= zoomFactor;
                 applyConstraints();
-                scrollX = timeAtMouse - (mouseX / zoomX);
+                scrollTick = tickAtMouse - (mouseX / zoomX);
             } else {
-                if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) scrollX += e.deltaX / zoomX;
+                if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) scrollTick += e.deltaX / zoomX;
                 else scrollY += e.deltaY;
             }
             applyConstraints();
@@ -504,42 +583,28 @@ export default class MidiVisualizerPlugin extends Plugin {
         let didDrag = false;
         
         canvas.addEventListener("mousedown", (e) => {
-            const x = e.offsetX;
-            const y = e.offsetY;
-            dragStartX = x;
-            didDrag = false;
+            const x = e.offsetX; const y = e.offsetY;
+            dragStartX = x; didDrag = false;
 
             if (audioElement && y < rulerHeight + 10) {
-                const playTime = audioElement.currentTime;
-                const playheadX = keyWidth + (playTime - scrollX) * zoomX;
+                const playTick = this.secondsToTicks(audioElement.currentTime);
+                const playheadX = (keyWidth + (playTick - scrollTick) * zoomX) | 0;
                 if (Math.abs(x - playheadX) < 10) {
-                    isDraggingPlayhead = true;
-                    canvas.style.cursor = "ew-resize";
-                    return;
+                    isDraggingPlayhead = true; canvas.style.cursor = "ew-resize"; return;
                 }
             }
-            if (y < rulerHeight) {
-                isDraggingRuler = true;
-                canvas.style.cursor = "default";
-            } else if (x < keyWidth) {
-                isDraggingKeys = true;
-                canvas.style.cursor = "ns-resize";
-            } else {
-                canvas.style.cursor = "grab";
-            }
+            if (y < rulerHeight) { isDraggingRuler = true; canvas.style.cursor = "default"; }
+            else if (x < keyWidth) { isDraggingKeys = true; canvas.style.cursor = "ns-resize"; }
+            else { canvas.style.cursor = "grab"; }
         });
 
         const onMouseMove = (e: MouseEvent) => {
             if (!isDraggingRuler && !isDraggingPlayhead && !isDraggingKeys) {
-                const x = e.offsetX;
-                const y = e.offsetY;
+                const x = e.offsetX; const y = e.offsetY;
                 if (audioElement && y < rulerHeight + 10) {
-                    const playTime = audioElement.currentTime;
-                    const playheadX = keyWidth + (playTime - scrollX) * zoomX;
-                    if (Math.abs(x - playheadX) < 10) {
-                        canvas.style.cursor = "pointer";
-                        return;
-                    }
+                    const playTick = this.secondsToTicks(audioElement.currentTime);
+                    const playheadX = (keyWidth + (playTick - scrollTick) * zoomX) | 0;
+                    if (Math.abs(x - playheadX) < 10) { canvas.style.cursor = "pointer"; return; }
                 }
                 if (y < rulerHeight) canvas.style.cursor = "default";
                 else if (x < keyWidth) canvas.style.cursor = "ns-resize";
@@ -552,21 +617,20 @@ export default class MidiVisualizerPlugin extends Plugin {
             if (isDraggingPlayhead) {
                  if (audioElement) {
                      const mouseX = e.offsetX - keyWidth;
-                     const time = scrollX + (mouseX / zoomX);
-                     seekTo(time);
+                     const tick = scrollTick + (mouseX / zoomX);
+                     seekTo(tick);
                  }
             }
             else if (isDraggingRuler) {
                 canvas.style.cursor = "ew-resize";
-                if (Math.abs(e.movementX) > 0) scrollX -= e.movementX / zoomX;
+                if (Math.abs(e.movementX) > 0) scrollTick -= e.movementX / zoomX;
                 if (Math.abs(e.movementY) > 0) {
                     const mouseX = e.offsetX - keyWidth;
-                    const timeAtMouse = scrollX + (mouseX / zoomX);
-                    const zoomSensitivity = 0.01;
-                    const zoomFactor = 1 + Math.abs(e.movementY * zoomSensitivity);
+                    const tickAtMouse = scrollTick + (mouseX / zoomX);
+                    const zoomFactor = 1 + Math.abs(e.movementY * 0.01);
                     if (e.movementY > 0) zoomX *= zoomFactor; else zoomX /= zoomFactor;
                     applyConstraints();
-                    scrollX = timeAtMouse - (mouseX / zoomX);
+                    scrollTick = tickAtMouse - (mouseX / zoomX);
                 }
             }
             else if (isDraggingKeys) scrollY -= e.movementY;
@@ -578,18 +642,12 @@ export default class MidiVisualizerPlugin extends Plugin {
         const onMouseUp = (e: MouseEvent) => {
             if (isDraggingRuler && !didDrag && audioElement) {
                 const mouseX = e.offsetX - keyWidth;
-                const time = scrollX + (mouseX / zoomX);
-                seekTo(time);
+                const tick = scrollTick + (mouseX / zoomX);
+                seekTo(tick);
                 requestAnimationFrame(draw);
             }
             isDraggingRuler = false; isDraggingPlayhead = false; isDraggingKeys = false;
-            const x = e.offsetX; const y = e.offsetY;
-             if (audioElement && y < rulerHeight + 10) {
-                const playTime = audioElement.currentTime;
-                const playheadX = keyWidth + (playTime - scrollX) * zoomX;
-                if (Math.abs(x - playheadX) < 10) canvas.style.cursor = "pointer";
-                else canvas.style.cursor = "default";
-             } else { canvas.style.cursor = "default"; }
+            canvas.style.cursor = "default";
         };
 
         canvas.addEventListener("mousemove", onMouseMove);

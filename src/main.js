@@ -2212,8 +2212,14 @@ module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 var import_midi = __toESM(require_Midi());
 var MidiVisualizerPlugin = class extends import_obsidian.Plugin {
+  constructor() {
+    super(...arguments);
+    // --- TEMPO MAP ENGINE ---
+    this.customTempoMap = [];
+    this.ppq = 480;
+  }
   async onload() {
-    this.registerMarkdownCodeBlockProcessor("midi", async (source, el, ctx) => {
+    this.registerMarkdownCodeBlockProcessor("midiviz", async (source, el, ctx) => {
       const lines = source.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
       let filename = "";
       let audioFilename = "";
@@ -2225,13 +2231,13 @@ var MidiVisualizerPlugin = class extends import_obsidian.Plugin {
       } else {
         lines.forEach((line) => {
           if (!line.includes(":")) {
-            filename = line;
+            if (!filename) filename = line;
             return;
           }
           const parts = line.split(":");
           const key = parts[0].trim().toLowerCase();
           const value = parts.slice(1).join(":").trim();
-          if (key === "file") filename = value;
+          if (key === "midi" || key === "file") filename = value;
           if (key === "audio") audioFilename = value;
           if (key === "names") showNames = value.toLowerCase() === "true";
           if (key === "accidentals") accidentals = value.toLowerCase().startsWith("flat") ? "flat" : "sharp";
@@ -2264,88 +2270,137 @@ var MidiVisualizerPlugin = class extends import_obsidian.Plugin {
     const names = type === "flat" ? flats : sharps;
     return `${names[midi % 12]}${Math.floor(midi / 12) - 1}`;
   }
-  findStartIndex(notes, startTime) {
+  findStartIndex(notes, startTick) {
     let low = 0;
     let high = notes.length - 1;
     while (low <= high) {
       const mid = Math.floor((low + high) / 2);
-      if (notes[mid].time + notes[mid].duration < startTime) low = mid + 1;
+      if (notes[mid].tick + notes[mid].durationTicks < startTick) low = mid + 1;
       else high = mid - 1;
     }
     return low;
   }
-  // --- ACCURATE TIME CONVERSION ---
-  ticksToSeconds(tick, midi) {
-    const tempos = midi.header.tempos;
-    const ppq = midi.header.ppq;
-    if (tempos.length === 0) return tick / ppq * (60 / 120);
-    let i = 0;
-    while (i < tempos.length - 1 && tempos[i + 1].ticks <= tick) {
-      i++;
+  recalculateTempoMap(midi) {
+    this.ppq = midi.header.ppq;
+    const rawTempos = midi.header.tempos;
+    rawTempos.sort((a, b) => a.ticks - b.ticks);
+    this.customTempoMap = [];
+    if (rawTempos.length === 0 || rawTempos[0].ticks > 0) {
+      this.customTempoMap.push({ ticks: 0, bpm: 120, time: 0 });
     }
-    const tempo = tempos[i];
-    const ticksSinceTempo = tick - tempo.ticks;
-    const secondsPerTick = 60 / (tempo.bpm * ppq);
-    return tempo.time + ticksSinceTempo * secondsPerTick;
-  }
-  // --- DRIFT-FREE MEASURE MAP ---
-  buildMeasureMap(midi) {
-    const map = [];
-    const ppq = midi.header.ppq;
-    const timeSigs = midi.header.timeSignatures;
-    let totalTicks = 0;
-    midi.tracks.forEach((t) => {
-      t.notes.forEach((n) => {
-        if (n.ticks + n.durationTicks > totalTicks) totalTicks = n.ticks + n.durationTicks;
-      });
-    });
-    totalTicks += ppq * 4 * 10;
-    let currentTick = 0;
-    let measureIndex = 0;
-    let sigIndex = 0;
-    let currentNum = timeSigs.length > 0 ? timeSigs[0].timeSignature[0] : 4;
-    let currentDenom = timeSigs.length > 0 ? timeSigs[0].timeSignature[1] : 4;
-    while (currentTick < totalTicks) {
-      while (sigIndex < timeSigs.length && timeSigs[sigIndex].ticks <= currentTick) {
-        currentNum = timeSigs[sigIndex].timeSignature[0];
-        currentDenom = timeSigs[sigIndex].timeSignature[1];
-        sigIndex++;
+    let currentTime = 0;
+    let lastTicks = 0;
+    let lastBpm = rawTempos.length > 0 && rawTempos[0].ticks === 0 ? rawTempos[0].bpm : 120;
+    for (const t of rawTempos) {
+      if (t.ticks === 0) {
+        lastBpm = t.bpm;
+        continue;
       }
-      const ticksPerMeasure = currentNum * 4 / currentDenom * ppq;
-      const startSeconds = this.ticksToSeconds(currentTick, midi);
-      const endSeconds = this.ticksToSeconds(currentTick + ticksPerMeasure, midi);
-      map.push({
-        index: measureIndex,
-        startTime: startSeconds,
-        duration: endSeconds - startSeconds,
-        numerator: currentNum,
-        denominator: currentDenom
+      const deltaTicks = t.ticks - lastTicks;
+      const secondsPerTick = 60 / (lastBpm * this.ppq);
+      currentTime += deltaTicks * secondsPerTick;
+      this.customTempoMap.push({
+        ticks: t.ticks,
+        bpm: t.bpm,
+        time: currentTime
       });
-      currentTick += ticksPerMeasure;
-      measureIndex++;
+      lastTicks = t.ticks;
+      lastBpm = t.bpm;
     }
-    return map;
+  }
+  secondsToTicks(time) {
+    let low = 0;
+    let high = this.customTempoMap.length - 1;
+    let idx = 0;
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      if (this.customTempoMap[mid].time <= time) {
+        idx = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    const event = this.customTempoMap[idx];
+    const timeDelta = time - event.time;
+    const secondsPerTick = 60 / (event.bpm * this.ppq);
+    return event.ticks + timeDelta / secondsPerTick;
+  }
+  ticksToSeconds(tick) {
+    let low = 0;
+    let high = this.customTempoMap.length - 1;
+    let idx = 0;
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      if (this.customTempoMap[mid].ticks <= tick) {
+        idx = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    const event = this.customTempoMap[idx];
+    const delta = tick - event.ticks;
+    const secondsPerTick = 60 / (event.bpm * this.ppq);
+    return event.time + delta * secondsPerTick;
   }
   renderInteractivePianoRoll(midi, container, options) {
     const wrapper = container.createDiv({ cls: "midi-roll-wrapper" });
     wrapper.style.display = "flex";
     wrapper.style.flexDirection = "column";
+    const getColor = (varName, fallback) => {
+      const value = getComputedStyle(wrapper).getPropertyValue(varName).trim();
+      return value || fallback;
+    };
+    this.recalculateTempoMap(midi);
     const allNotes = [];
     let minNote = 128;
     let maxNote = 0;
+    let totalTicks = 0;
     midi.tracks.forEach((track, index) => {
       const hue = index * 137 % 360;
       track.notes.forEach((note) => {
         if (note.midi < minNote) minNote = note.midi;
         if (note.midi > maxNote) maxNote = note.midi;
-        allNotes.push({ time: note.time, duration: note.duration, midi: note.midi, hue });
+        const endTick = note.ticks + note.durationTicks;
+        if (endTick > totalTicks) totalTicks = endTick;
+        allNotes.push({
+          tick: note.ticks,
+          durationTicks: note.durationTicks,
+          midi: note.midi,
+          hue
+        });
       });
     });
-    allNotes.sort((a, b) => a.time - b.time);
+    allNotes.sort((a, b) => a.tick - b.tick);
     minNote = Math.max(0, minNote - 2);
     maxNote = Math.min(127, maxNote + 2);
-    const totalDuration = midi.duration || 1;
-    const measureMap = this.buildMeasureMap(midi);
+    const ppq = midi.header.ppq;
+    const songEndTick = totalTicks;
+    totalTicks += ppq * 4;
+    const measureMap = [];
+    const timeSigs = midi.header.timeSignatures;
+    if (timeSigs.length === 0) timeSigs.push({ ticks: 0, timeSignature: [4, 4] });
+    let measureIndex = 0;
+    for (let i = 0; i < timeSigs.length; i++) {
+      const currentSig = timeSigs[i];
+      const nextSig = timeSigs[i + 1];
+      const startTick = currentSig.ticks;
+      const endTick = nextSig ? nextSig.ticks : totalTicks;
+      const num = currentSig.timeSignature[0];
+      const denom = currentSig.timeSignature[1];
+      const ticksPerMeasure = num * 4 / denom * this.ppq;
+      let cursor = startTick;
+      while (cursor < endTick) {
+        measureMap.push({
+          index: measureIndex++,
+          tick: cursor,
+          numerator: num,
+          denominator: denom
+        });
+        cursor += ticksPerMeasure;
+      }
+    }
     let audioElement = null;
     let isPlaying = false;
     let playBtn = null;
@@ -2370,8 +2425,49 @@ var MidiVisualizerPlugin = class extends import_obsidian.Plugin {
     bgCanvas.width = width;
     bgCanvas.height = 128 * noteHeight;
     const bgCtx = bgCanvas.getContext("2d", { alpha: false });
-    if (bgCtx) {
-      bgCtx.fillStyle = "#222";
+    let colors = {
+      bg: "",
+      bgBlackRow: "",
+      gridLine: "",
+      keyWhite: "",
+      keyBlack: "",
+      keyBorder: "",
+      keyLabel: "",
+      rulerBg: "",
+      rulerLine: "",
+      rulerText: "",
+      rulerBeat: "",
+      rulerCorner: "",
+      gridLineMeasure: "",
+      playhead: "",
+      noteSaturation: "",
+      noteLightness: "",
+      noteLabel: ""
+    };
+    const updateColors = () => {
+      colors = {
+        bg: getColor("--midi-bg", "#222"),
+        bgBlackRow: getColor("--midi-bg-black-row", "#1a1a1a"),
+        gridLine: getColor("--midi-grid-line", "#333"),
+        keyWhite: getColor("--midi-key-white", "#fff"),
+        keyBlack: getColor("--midi-key-black", "#000"),
+        keyBorder: getColor("--midi-key-border", "#555"),
+        keyLabel: getColor("--midi-key-label", "#000"),
+        rulerBg: getColor("--midi-ruler-bg", "#333"),
+        rulerLine: getColor("--midi-ruler-line", "#999"),
+        rulerText: getColor("--midi-ruler-text", "#ccc"),
+        rulerBeat: getColor("--midi-ruler-beat", "#555"),
+        rulerCorner: getColor("--midi-ruler-corner", "#222"),
+        gridLineMeasure: getColor("--midi-grid-line-measure", "#444"),
+        playhead: getColor("--midi-playhead", "#ff3333"),
+        noteSaturation: getColor("--midi-note-saturation", "70%"),
+        noteLightness: getColor("--midi-note-lightness", "60%"),
+        noteLabel: getColor("--midi-note-label", "#000")
+      };
+    };
+    const redrawBackground = () => {
+      if (!bgCtx) return;
+      bgCtx.fillStyle = colors.bg;
       bgCtx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
       bgCtx.lineWidth = 1;
       const noteAreaWidth2 = bgCanvas.width - keyWidth;
@@ -2380,20 +2476,20 @@ var MidiVisualizerPlugin = class extends import_obsidian.Plugin {
         const y = i * noteHeight;
         const isBlackKey = [1, 3, 6, 8, 10].includes(currentMidi % 12);
         if (isBlackKey) {
-          bgCtx.fillStyle = "#1a1a1a";
+          bgCtx.fillStyle = colors.bgBlackRow;
           bgCtx.fillRect(keyWidth, y, noteAreaWidth2, noteHeight);
         }
-        bgCtx.strokeStyle = "#333";
+        bgCtx.strokeStyle = colors.gridLine;
         bgCtx.beginPath();
         bgCtx.moveTo(keyWidth, y);
         bgCtx.lineTo(bgCanvas.width, y);
         bgCtx.stroke();
-        bgCtx.fillStyle = isBlackKey ? "#000" : "#fff";
+        bgCtx.fillStyle = isBlackKey ? colors.keyBlack : colors.keyWhite;
         bgCtx.fillRect(0, y, keyWidth, noteHeight);
-        bgCtx.strokeStyle = "#555";
+        bgCtx.strokeStyle = colors.keyBorder;
         bgCtx.strokeRect(0, y, keyWidth, noteHeight);
         if (currentMidi % 12 === 0) {
-          bgCtx.fillStyle = "#000";
+          bgCtx.fillStyle = colors.keyLabel;
           bgCtx.font = "10px sans-serif";
           bgCtx.textAlign = "right";
           bgCtx.textBaseline = "alphabetic";
@@ -2401,61 +2497,47 @@ var MidiVisualizerPlugin = class extends import_obsidian.Plugin {
           bgCtx.fillText(`C${octave}`, keyWidth - 3, y + noteHeight - 3);
         }
       }
-    }
+    };
+    updateColors();
+    redrawBackground();
+    const themeObserver = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.attributeName === "class") {
+          updateColors();
+          redrawBackground();
+          requestAnimationFrame(draw);
+          break;
+        }
+      }
+    });
+    themeObserver.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+    this.register(() => themeObserver.disconnect());
     if (audioElement) {
       const controlsBar = wrapper.createEl("div", { cls: "midi-bottom-bar" });
-      Object.assign(controlsBar.style, {
-        width: "100%",
-        height: "36px",
-        background: "#2a2a2a",
-        borderTop: "1px solid #444",
-        borderBottomLeftRadius: "4px",
-        borderBottomRightRadius: "4px",
-        display: "flex",
-        alignItems: "center",
-        padding: "0 10px",
-        gap: "15px"
-      });
       playBtn = controlsBar.createEl("button", { text: "\u25B6 Play" });
-      Object.assign(playBtn.style, {
-        cursor: "pointer",
-        padding: "4px 12px",
-        background: "#444",
-        color: "#fff",
-        border: "1px solid #555",
-        borderRadius: "3px",
-        fontSize: "12px",
-        fontWeight: "bold",
-        minWidth: "60px"
-      });
       playBtn.onclick = () => togglePlay();
-      const volGroup = controlsBar.createEl("div");
-      volGroup.style.display = "flex";
-      volGroup.style.alignItems = "center";
-      volGroup.style.gap = "5px";
-      const volIcon = volGroup.createEl("span", { text: "\u{1F50A}" });
-      volIcon.style.fontSize = "14px";
-      volIcon.style.color = "#ccc";
-      volIcon.style.cursor = "default";
-      const volSlider = volGroup.createEl("input");
+      const volGroup = controlsBar.createEl("div", { cls: "midi-volume-group" });
+      volGroup.createEl("span", { text: "\u{1F50A}", cls: "midi-volume-icon" });
+      const volSlider = volGroup.createEl("input", { cls: "midi-volume-slider" });
       volSlider.type = "range";
       volSlider.min = "0";
       volSlider.max = "1";
       volSlider.step = "0.01";
       volSlider.value = "1";
-      Object.assign(volSlider.style, { width: "80px", cursor: "pointer", height: "4px", accentColor: "#666" });
       volSlider.oninput = (e) => {
         if (audioElement) audioElement.volume = parseFloat(e.target.value);
       };
     }
     const noteAreaWidth = canvas.width - keyWidth;
-    const minZoom = noteAreaWidth / totalDuration;
-    const maxZoom = 2e3;
-    let zoomX = minZoom;
+    const minZoom = noteAreaWidth / songEndTick;
+    const readableTicks = ppq * 4 * 4;
+    const readableZoom = noteAreaWidth / readableTicks;
+    let zoomX = Math.max(minZoom, Math.min(readableZoom, 2));
+    const maxZoom = 5;
     const centerNote = (minNote + maxNote) / 2;
     const centerPixel = (127 - centerNote) * noteHeight;
     let scrollY = Math.max(0, centerPixel - options.viewportHeight / 2);
-    let scrollX = 0;
+    let scrollTick = 0;
     let isDraggingRuler = false;
     let isDraggingPlayhead = false;
     let isDraggingKeys = false;
@@ -2471,119 +2553,131 @@ var MidiVisualizerPlugin = class extends import_obsidian.Plugin {
         if (playBtn) playBtn.innerText = "\u275A\u275A Pause";
       }
     };
-    const seekTo = (time) => {
+    const seekTo = (tick) => {
       if (audioElement) {
-        time = Math.max(0, Math.min(time, totalDuration));
-        audioElement.currentTime = time;
+        const time = this.ticksToSeconds(tick);
+        audioElement.currentTime = Math.max(0, time);
       }
     };
     const applyConstraints = () => {
       zoomX = Math.max(minZoom, Math.min(zoomX, maxZoom));
-      const visibleDuration = (canvas.width - keyWidth) / zoomX;
-      const maxScrollX = Math.max(0, totalDuration - visibleDuration);
-      scrollX = Math.max(0, Math.min(scrollX, maxScrollX));
+      const visibleTicks = (canvas.width - keyWidth) / zoomX;
+      const maxScroll = Math.max(0, songEndTick - visibleTicks);
+      scrollTick = Math.max(0, Math.min(scrollTick, maxScroll));
     };
     const draw = () => {
       if (isPlaying && audioElement && !isDraggingRuler && !isDraggingPlayhead) {
-        const playTime = audioElement.currentTime;
-        const visibleDuration = (canvas.width - keyWidth) / zoomX;
-        let targetScrollX = playTime - visibleDuration / 2;
-        const maxScrollX = Math.max(0, totalDuration - visibleDuration);
-        targetScrollX = Math.max(0, Math.min(targetScrollX, maxScrollX));
-        scrollX = targetScrollX;
+        const playTick = this.secondsToTicks(audioElement.currentTime);
+        const visibleTicks = (canvas.width - keyWidth) / zoomX;
+        let targetScroll = playTick - visibleTicks / 2;
+        const maxScroll = Math.max(0, songEndTick - visibleTicks);
+        scrollTick = Math.max(0, Math.min(targetScroll, maxScroll));
       }
-      const bgY = rulerHeight - scrollY;
+      const bgY = rulerHeight - scrollY | 0;
       ctx.drawImage(bgCanvas, 0, bgY);
       if (bgY > 0) {
-        ctx.fillStyle = "#222";
+        ctx.fillStyle = colors.bg;
         ctx.fillRect(0, 0, width, bgY);
       }
       if (bgY + bgCanvas.height < canvas.height) {
-        ctx.fillStyle = "#222";
+        ctx.fillStyle = colors.bg;
         ctx.fillRect(0, bgY + bgCanvas.height, width, canvas.height - (bgY + bgCanvas.height));
       }
-      const startVisibleTime = scrollX;
-      const endVisibleTime = scrollX + canvas.width / zoomX;
-      let i = this.findStartIndex(allNotes, startVisibleTime);
+      const startTick = scrollTick;
+      const endTick = scrollTick + canvas.width / zoomX;
+      let i = this.findStartIndex(allNotes, startTick);
+      let currentHue = -1;
       for (; i < allNotes.length; i++) {
         const note = allNotes[i];
-        if (note.time > endVisibleTime) break;
-        if (note.time + note.duration < startVisibleTime) continue;
-        const x = keyWidth + (note.time - scrollX) * zoomX;
-        const w = note.duration * zoomX;
-        const y = (127 - note.midi) * noteHeight - scrollY + rulerHeight;
+        if (note.tick > endTick) break;
+        if (note.tick + note.durationTicks < startTick) continue;
+        const x = keyWidth + (note.tick - scrollTick) * zoomX | 0;
+        const w = note.durationTicks * zoomX;
+        const y = (127 - note.midi) * noteHeight - scrollY + rulerHeight | 0;
         if (y + noteHeight < rulerHeight || y > canvas.height) continue;
-        ctx.fillStyle = `hsl(${note.hue}, 70%, 60%)`;
-        ctx.strokeStyle = `hsl(${note.hue}, 70%, 30%)`;
+        if (note.hue !== currentHue) {
+          ctx.fillStyle = `hsl(${note.hue}, ${colors.noteSaturation}, ${colors.noteLightness})`;
+          currentHue = note.hue;
+        }
         const drawX = Math.max(keyWidth, x);
-        const drawW = Math.min(w, w - (keyWidth - x));
+        let drawW = Math.max(1, w) | 0;
+        if (drawW > 2) {
+          drawW = Math.min(drawW, drawW - (keyWidth - x));
+          if (drawW > 2) drawW -= 1;
+        }
         if (drawW > 0) {
           ctx.fillRect(drawX, y + 1, drawW, noteHeight - 2);
-          ctx.strokeRect(drawX, y + 1, drawW, noteHeight - 2);
-          if (options.showNames && drawW > 15) {
+          if (options.showNames && drawW > 16) {
             const name = this.getNoteName(note.midi, options.accidentals);
-            if (drawW > 12) {
-              const textW = ctx.measureText(name).width;
-              if (drawW > textW + 4) {
-                ctx.fillStyle = "#000";
-                ctx.font = "10px sans-serif";
-                ctx.textAlign = "left";
-                ctx.textBaseline = "middle";
-                ctx.fillText(name, drawX + 2, y + noteHeight / 2);
-              }
+            if (drawW > 14) {
+              ctx.save();
+              ctx.fillStyle = colors.noteLabel;
+              ctx.font = "10px sans-serif";
+              ctx.textAlign = "left";
+              ctx.textBaseline = "middle";
+              ctx.fillText(name, drawX + 2, y + noteHeight / 2);
+              ctx.restore();
+              currentHue = -1;
             }
           }
         }
       }
-      ctx.fillStyle = "#333";
+      ctx.fillStyle = colors.rulerBg;
       ctx.fillRect(keyWidth, 0, noteAreaWidth, rulerHeight);
       ctx.textAlign = "left";
       ctx.textBaseline = "top";
-      let showBeats = zoomX > 20;
+      const showBeats = ppq * zoomX > 20;
       for (const m of measureMap) {
-        if (m.startTime + m.duration < startVisibleTime) continue;
-        if (m.startTime > endVisibleTime) break;
-        const screenX = keyWidth + (m.startTime - scrollX) * zoomX;
-        ctx.strokeStyle = "#999";
-        ctx.beginPath();
-        ctx.moveTo(screenX, 0);
-        ctx.lineTo(screenX, rulerHeight);
-        ctx.stroke();
-        ctx.fillStyle = "#ccc";
-        ctx.fillText((m.index + 1).toString(), screenX + 4, 4);
-        ctx.save();
-        ctx.strokeStyle = "#444";
-        ctx.globalAlpha = 0.5;
-        ctx.beginPath();
-        ctx.moveTo(screenX, rulerHeight);
-        ctx.lineTo(screenX, canvas.height);
-        ctx.stroke();
-        ctx.restore();
+        if (m.tick > endTick) break;
+        const measureDuration = m.numerator * 4 / m.denominator * ppq;
+        if (m.tick + measureDuration < startTick) continue;
+        const screenX = keyWidth + (m.tick - scrollTick) * zoomX | 0;
+        if (screenX >= keyWidth) {
+          ctx.strokeStyle = colors.rulerLine;
+          ctx.beginPath();
+          ctx.moveTo(screenX, 0);
+          ctx.lineTo(screenX, rulerHeight);
+          ctx.stroke();
+          ctx.fillStyle = colors.rulerText;
+          ctx.fillText((m.index + 1).toString(), screenX + 4, 4);
+        }
+        if (screenX >= keyWidth) {
+          ctx.save();
+          ctx.strokeStyle = colors.gridLineMeasure;
+          ctx.globalAlpha = 0.5;
+          ctx.beginPath();
+          ctx.moveTo(screenX, rulerHeight);
+          ctx.lineTo(screenX, canvas.height);
+          ctx.stroke();
+          ctx.restore();
+        }
         if (showBeats) {
-          const beatDuration = m.duration / m.numerator;
+          const beatSize = ppq * 4 / m.denominator;
           for (let b = 1; b < m.numerator; b++) {
-            const beatTime = m.startTime + b * beatDuration;
-            if (beatTime > endVisibleTime) break;
-            const beatX = keyWidth + (beatTime - scrollX) * zoomX;
-            ctx.strokeStyle = "#555";
-            ctx.beginPath();
-            ctx.moveTo(beatX, rulerHeight - 10);
-            ctx.lineTo(beatX, rulerHeight);
-            ctx.stroke();
+            const beatTick = m.tick + b * beatSize;
+            if (beatTick > endTick) break;
+            const beatX = keyWidth + (beatTick - scrollTick) * zoomX | 0;
+            if (beatX >= keyWidth) {
+              ctx.strokeStyle = colors.rulerBeat;
+              ctx.beginPath();
+              ctx.moveTo(beatX, rulerHeight - 10);
+              ctx.lineTo(beatX, rulerHeight);
+              ctx.stroke();
+            }
           }
         }
       }
       if (audioElement) {
-        const playTime = audioElement.currentTime;
-        const playheadX = keyWidth + (playTime - scrollX) * zoomX;
+        const playTick = this.secondsToTicks(audioElement.currentTime);
+        const playheadX = keyWidth + (playTick - scrollTick) * zoomX | 0;
         if (playheadX >= keyWidth && playheadX <= canvas.width) {
-          ctx.strokeStyle = "#ff3333";
+          ctx.strokeStyle = colors.playhead;
           ctx.lineWidth = 2;
           ctx.beginPath();
           ctx.moveTo(playheadX, 0);
           ctx.lineTo(playheadX, canvas.height);
           ctx.stroke();
-          ctx.fillStyle = "#ff3333";
+          ctx.fillStyle = colors.playhead;
           ctx.beginPath();
           ctx.moveTo(playheadX - 8, 0);
           ctx.lineTo(playheadX + 8, 0);
@@ -2591,9 +2685,9 @@ var MidiVisualizerPlugin = class extends import_obsidian.Plugin {
           ctx.fill();
         }
       }
-      ctx.fillStyle = "#222";
+      ctx.fillStyle = colors.rulerCorner;
       ctx.fillRect(0, 0, keyWidth, rulerHeight);
-      ctx.strokeStyle = "#000";
+      ctx.strokeStyle = colors.keyBlack;
       ctx.strokeRect(0, 0, keyWidth, rulerHeight);
       if (isPlaying || audioElement) requestAnimationFrame(draw);
     };
@@ -2602,7 +2696,7 @@ var MidiVisualizerPlugin = class extends import_obsidian.Plugin {
         isPlaying = false;
         if (playBtn) playBtn.innerText = "\u25B6 Play";
         audioElement.currentTime = 0;
-        scrollX = 0;
+        scrollTick = 0;
         requestAnimationFrame(draw);
       });
     }
@@ -2611,13 +2705,13 @@ var MidiVisualizerPlugin = class extends import_obsidian.Plugin {
       if (e.ctrlKey || e.metaKey) {
         const zoomFactor = 1.1;
         const mouseX = e.offsetX - keyWidth;
-        const timeAtMouse = scrollX + mouseX / zoomX;
+        const tickAtMouse = scrollTick + mouseX / zoomX;
         if (e.deltaY < 0) zoomX *= zoomFactor;
         else zoomX /= zoomFactor;
         applyConstraints();
-        scrollX = timeAtMouse - mouseX / zoomX;
+        scrollTick = tickAtMouse - mouseX / zoomX;
       } else {
-        if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) scrollX += e.deltaX / zoomX;
+        if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) scrollTick += e.deltaX / zoomX;
         else scrollY += e.deltaY;
       }
       applyConstraints();
@@ -2631,8 +2725,8 @@ var MidiVisualizerPlugin = class extends import_obsidian.Plugin {
       dragStartX = x;
       didDrag = false;
       if (audioElement && y < rulerHeight + 10) {
-        const playTime = audioElement.currentTime;
-        const playheadX = keyWidth + (playTime - scrollX) * zoomX;
+        const playTick = this.secondsToTicks(audioElement.currentTime);
+        const playheadX = keyWidth + (playTick - scrollTick) * zoomX | 0;
         if (Math.abs(x - playheadX) < 10) {
           isDraggingPlayhead = true;
           canvas.style.cursor = "ew-resize";
@@ -2654,8 +2748,8 @@ var MidiVisualizerPlugin = class extends import_obsidian.Plugin {
         const x = e.offsetX;
         const y = e.offsetY;
         if (audioElement && y < rulerHeight + 10) {
-          const playTime = audioElement.currentTime;
-          const playheadX = keyWidth + (playTime - scrollX) * zoomX;
+          const playTick = this.secondsToTicks(audioElement.currentTime);
+          const playheadX = keyWidth + (playTick - scrollTick) * zoomX | 0;
           if (Math.abs(x - playheadX) < 10) {
             canvas.style.cursor = "pointer";
             return;
@@ -2670,21 +2764,20 @@ var MidiVisualizerPlugin = class extends import_obsidian.Plugin {
       if (isDraggingPlayhead) {
         if (audioElement) {
           const mouseX = e.offsetX - keyWidth;
-          const time = scrollX + mouseX / zoomX;
-          seekTo(time);
+          const tick = scrollTick + mouseX / zoomX;
+          seekTo(tick);
         }
       } else if (isDraggingRuler) {
         canvas.style.cursor = "ew-resize";
-        if (Math.abs(e.movementX) > 0) scrollX -= e.movementX / zoomX;
+        if (Math.abs(e.movementX) > 0) scrollTick -= e.movementX / zoomX;
         if (Math.abs(e.movementY) > 0) {
           const mouseX = e.offsetX - keyWidth;
-          const timeAtMouse = scrollX + mouseX / zoomX;
-          const zoomSensitivity = 0.01;
-          const zoomFactor = 1 + Math.abs(e.movementY * zoomSensitivity);
+          const tickAtMouse = scrollTick + mouseX / zoomX;
+          const zoomFactor = 1 + Math.abs(e.movementY * 0.01);
           if (e.movementY > 0) zoomX *= zoomFactor;
           else zoomX /= zoomFactor;
           applyConstraints();
-          scrollX = timeAtMouse - mouseX / zoomX;
+          scrollTick = tickAtMouse - mouseX / zoomX;
         }
       } else if (isDraggingKeys) scrollY -= e.movementY;
       applyConstraints();
@@ -2693,23 +2786,14 @@ var MidiVisualizerPlugin = class extends import_obsidian.Plugin {
     const onMouseUp = (e) => {
       if (isDraggingRuler && !didDrag && audioElement) {
         const mouseX = e.offsetX - keyWidth;
-        const time = scrollX + mouseX / zoomX;
-        seekTo(time);
+        const tick = scrollTick + mouseX / zoomX;
+        seekTo(tick);
         requestAnimationFrame(draw);
       }
       isDraggingRuler = false;
       isDraggingPlayhead = false;
       isDraggingKeys = false;
-      const x = e.offsetX;
-      const y = e.offsetY;
-      if (audioElement && y < rulerHeight + 10) {
-        const playTime = audioElement.currentTime;
-        const playheadX = keyWidth + (playTime - scrollX) * zoomX;
-        if (Math.abs(x - playheadX) < 10) canvas.style.cursor = "pointer";
-        else canvas.style.cursor = "default";
-      } else {
-        canvas.style.cursor = "default";
-      }
+      canvas.style.cursor = "default";
     };
     canvas.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup", onMouseUp);
