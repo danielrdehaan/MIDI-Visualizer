@@ -1,11 +1,13 @@
 import { Plugin, TFile } from 'obsidian';
 import { Midi } from '@tonejs/midi';
+import * as Tone from 'tone';
 
 interface PianoRollOptions {
     showNames: boolean;
     accidentals: 'sharp' | 'flat';
     viewportHeight: number;
     audioFile?: TFile;
+    midiFile?: TFile;
 }
 
 interface RenderNote {
@@ -79,7 +81,7 @@ export default class MidiVisualizerPlugin extends Plugin {
             try {
                 const arrayBuffer = await this.app.vault.readBinary(midiFile);
                 const midi = new Midi(arrayBuffer);
-                this.renderInteractivePianoRoll(midi, el, { showNames, accidentals, viewportHeight, audioFile });
+                this.renderInteractivePianoRoll(midi, el, { showNames, accidentals, viewportHeight, audioFile, midiFile });
             } catch (error) {
                 console.error(error);
                 el.createEl("div", { text: `Error parsing MIDI: ${error.message}` });
@@ -112,33 +114,29 @@ export default class MidiVisualizerPlugin extends Plugin {
     recalculateTempoMap(midi: Midi) {
         this.ppq = midi.header.ppq;
         const rawTempos = midi.header.tempos;
-        rawTempos.sort((a, b) => a.ticks - b.ticks);
+        
+        // Sort by ticks to ensure correct order
+        const sortedTempos = [...rawTempos].sort((a, b) => a.ticks - b.ticks);
 
         this.customTempoMap = [];
         
-        if (rawTempos.length === 0 || rawTempos[0].ticks > 0) {
+        // If there are tempo events, use them directly (including their pre-calculated time)
+        if (sortedTempos.length > 0) {
+            for (const t of sortedTempos) {
+                this.customTempoMap.push({
+                    ticks: t.ticks,
+                    bpm: t.bpm,
+                    time: t.time  // Use the library's pre-calculated time
+                });
+            }
+            
+            // Ensure we have an event at tick 0
+            if (this.customTempoMap[0].ticks !== 0) {
+                this.customTempoMap.unshift({ ticks: 0, bpm: 120, time: 0 });
+            }
+        } else {
+            // No tempo events - default to 120 BPM
             this.customTempoMap.push({ ticks: 0, bpm: 120, time: 0 });
-        }
-
-        let currentTime = 0;
-        let lastTicks = 0;
-        let lastBpm = (rawTempos.length > 0 && rawTempos[0].ticks === 0) ? rawTempos[0].bpm : 120;
-
-        for (const t of rawTempos) {
-            if (t.ticks === 0) { lastBpm = t.bpm; continue; }
-
-            const deltaTicks = t.ticks - lastTicks;
-            const secondsPerTick = 60 / (lastBpm * this.ppq);
-            currentTime += deltaTicks * secondsPerTick;
-
-            this.customTempoMap.push({
-                ticks: t.ticks,
-                bpm: t.bpm,
-                time: currentTime
-            });
-
-            lastTicks = t.ticks;
-            lastBpm = t.bpm;
         }
     }
 
@@ -258,12 +256,76 @@ export default class MidiVisualizerPlugin extends Plugin {
         let audioElement: HTMLAudioElement | null = null;
         let isPlaying = false;
         let playBtn: HTMLElement | null = null;
+        
+        // Tone.js synth for MIDI playback (when no audio file)
+        let synth: Tone.PolySynth | null = null;
+        let synthStartTime = 0;
+        let synthPauseTime = 0;
+        let scheduledEvents: number[] = [];
+        const useSynth = !options.audioFile;
 
         if (options.audioFile) {
             audioElement = new Audio(this.app.vault.getResourcePath(options.audioFile));
             audioElement.loop = false;
             audioElement.volume = 1.0;
+        } else {
+            // Create Tone.js synth for MIDI playback
+            synth = new Tone.PolySynth(Tone.Synth, {
+                oscillator: { type: "triangle" },
+                envelope: { attack: 0.02, decay: 0.1, sustain: 0.3, release: 0.8 }
+            }).toDestination();
+            synth.volume.value = -6; // Reduce volume slightly
         }
+        
+        // Helper to get current playback time in seconds
+        const getCurrentTime = (): number => {
+            if (audioElement) {
+                return audioElement.currentTime;
+            } else if (useSynth && isPlaying) {
+                return Tone.now() - synthStartTime + synthPauseTime;
+            } else if (useSynth) {
+                return synthPauseTime;
+            }
+            return 0;
+        };
+        
+        // Helper to schedule MIDI notes with Tone.js
+        const scheduleNotes = (startTimeSeconds: number) => {
+            if (!synth) return;
+            
+            // Clear any previously scheduled events
+            scheduledEvents.forEach(id => Tone.Transport.clear(id));
+            scheduledEvents = [];
+            
+            const now = Tone.now();
+            
+            midi.tracks.forEach(track => {
+                track.notes.forEach(note => {
+                    const noteStartTime = note.time - startTimeSeconds;
+                    if (noteStartTime >= 0) {
+                        const eventId = Tone.Transport.schedule((time) => {
+                            synth?.triggerAttackRelease(
+                                Tone.Frequency(note.midi, "midi").toFrequency(),
+                                note.duration,
+                                time,
+                                note.velocity
+                            );
+                        }, noteStartTime);
+                        scheduledEvents.push(eventId);
+                    }
+                });
+            });
+        };
+        
+        // Helper to stop synth playback
+        const stopSynth = () => {
+            if (synth) {
+                Tone.Transport.stop();
+                Tone.Transport.cancel();
+                scheduledEvents = [];
+                synth.releaseAll();
+            }
+        };
 
         const keyWidth = 40;
         const rulerHeight = 30;
@@ -276,6 +338,7 @@ export default class MidiVisualizerPlugin extends Plugin {
         canvas.style.height = `${options.viewportHeight}px`;
         canvas.style.userSelect = "none";
         canvas.style.display = "block";
+        canvas.style.touchAction = "none"; // Prevent browser handling of touch gestures
         
         const ctx = canvas.getContext("2d", { alpha: false });
         if (!ctx) return;
@@ -349,6 +412,12 @@ export default class MidiVisualizerPlugin extends Plugin {
             }
         };
         
+        // Function to rebuild background canvas at new size
+        const rebuildBackground = () => {
+            bgCanvas.width = canvas.width;
+            redrawBackground();
+        };
+        
         // Initial color read and background draw
         updateColors();
         redrawBackground();
@@ -370,15 +439,138 @@ export default class MidiVisualizerPlugin extends Plugin {
         this.register(() => themeObserver.disconnect());
 
         // 5. Controls UI
-        if (audioElement) {
-            const controlsBar = wrapper.createEl("div", { cls: "midi-bottom-bar" });
+        const controlsBar = wrapper.createEl("div", { cls: "midi-bottom-bar" });
+        controlsBar.style.position = "relative";
+        
+        // Show play button for both audio file and synth modes
+        if (audioElement || useSynth) {
             playBtn = controlsBar.createEl("button", { text: "▶ Play" });
             playBtn.onclick = () => togglePlay();
             const volGroup = controlsBar.createEl("div", { cls: "midi-volume-group" });
             volGroup.createEl("span", { text: "🔊", cls: "midi-volume-icon" });
             const volSlider = volGroup.createEl("input", { cls: "midi-volume-slider" });
             volSlider.type = "range"; volSlider.min = "0"; volSlider.max = "1"; volSlider.step = "0.01"; volSlider.value = "1";
-            volSlider.oninput = (e) => { if (audioElement) audioElement.volume = parseFloat((e.target as HTMLInputElement).value); };
+            volSlider.oninput = (e) => {
+                const vol = parseFloat((e.target as HTMLInputElement).value);
+                if (audioElement) {
+                    audioElement.volume = vol;
+                } else if (synth) {
+                    // Convert 0-1 to dB scale (-60 to 0)
+                    synth.volume.value = vol > 0 ? -30 * (1 - vol) : -Infinity;
+                }
+            };
+        }
+
+        // MIDI File button - Reveal in Explorer (centered)
+        if (options.midiFile) {
+            const revealBtn = controlsBar.createEl("button", { text: "🎹 Reveal", cls: "midi-reveal-btn" });
+            revealBtn.title = "Reveal MIDI file in system file explorer - then drag to your DAW";
+            revealBtn.style.position = "absolute";
+            revealBtn.style.left = "50%";
+            revealBtn.style.transform = "translateX(-50%)";
+            revealBtn.onclick = () => {
+                if (options.midiFile) {
+                    // Use Obsidian's built-in method to show in system explorer
+                    (this.app as any).showInFolder(options.midiFile.path);
+                }
+            };
+        }
+
+        // Fullscreen button
+        let isFullscreen = false;
+        let originalParent: HTMLElement | null = null;
+        let originalNextSibling: Node | null = null;
+        const fullscreenBtn = controlsBar.createEl("button", { text: "⛶ Fullscreen", cls: "midi-fullscreen-btn" });
+        fullscreenBtn.style.marginLeft = "auto";
+        
+        const resizeCanvas = () => {
+            if (isFullscreen) {
+                const controlsHeight = controlsBar.offsetHeight;
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight - controlsHeight;
+                canvas.style.height = `${canvas.height}px`;
+            } else {
+                canvas.width = container.clientWidth > 0 ? container.clientWidth : 700;
+                canvas.height = options.viewportHeight;
+                canvas.style.height = `${options.viewportHeight}px`;
+            }
+            rebuildBackground();
+        };
+
+        const toggleFullscreen = () => {
+            if (!isFullscreen) {
+                // Save original position in DOM
+                originalParent = wrapper.parentElement;
+                originalNextSibling = wrapper.nextSibling;
+                
+                // Move to body to escape any container overflow/clipping
+                document.body.appendChild(wrapper);
+                
+                wrapper.classList.add("midi-fullscreen");
+                wrapper.style.position = "fixed";
+                wrapper.style.top = "0";
+                wrapper.style.left = "0";
+                wrapper.style.width = "100vw";
+                wrapper.style.height = "100vh";
+                wrapper.style.zIndex = "9999";
+                wrapper.style.background = colors.bg;
+                wrapper.style.display = "flex";
+                wrapper.style.flexDirection = "column";
+                canvas.style.flex = "1";
+                canvas.style.width = "100%";
+                controlsBar.style.flexShrink = "0";
+                fullscreenBtn.innerText = "✕ Exit";
+                isFullscreen = true;
+                resizeCanvas();
+            } else {
+                // Restore to original position in DOM
+                if (originalParent) {
+                    if (originalNextSibling) {
+                        originalParent.insertBefore(wrapper, originalNextSibling);
+                    } else {
+                        originalParent.appendChild(wrapper);
+                    }
+                }
+                
+                wrapper.classList.remove("midi-fullscreen");
+                wrapper.style.position = "";
+                wrapper.style.top = "";
+                wrapper.style.left = "";
+                wrapper.style.width = "";
+                wrapper.style.height = "";
+                wrapper.style.zIndex = "";
+                wrapper.style.background = "";
+                canvas.style.flex = "";
+                canvas.style.width = "";
+                controlsBar.style.flexShrink = "";
+                fullscreenBtn.innerText = "⛶ Fullscreen";
+                isFullscreen = false;
+                resizeCanvas();
+            }
+        };
+        
+        fullscreenBtn.onclick = toggleFullscreen;
+        
+        // Handle Escape key to exit fullscreen
+        const handleKeydown = (e: KeyboardEvent) => {
+            if (e.key === "Escape" && isFullscreen) {
+                toggleFullscreen();
+            }
+        };
+        document.addEventListener("keydown", handleKeydown);
+        this.register(() => document.removeEventListener("keydown", handleKeydown));
+        
+        // Handle window resize when in fullscreen
+        const handleResize = () => { if (isFullscreen) resizeCanvas(); };
+        window.addEventListener("resize", handleResize);
+        this.register(() => window.removeEventListener("resize", handleResize));
+        
+        // Cleanup synth on unmount
+        if (synth) {
+            this.register(() => {
+                stopSynth();
+                synth?.dispose();
+            });
         }
 
         // 6. View State
@@ -399,24 +591,52 @@ export default class MidiVisualizerPlugin extends Plugin {
         let isDraggingRuler = false;
         let isDraggingPlayhead = false;
         let isDraggingKeys = false;
+        let isDraggingCanvas = false;
 
-        const togglePlay = () => {
-            if (!audioElement) return;
+        const togglePlay = async () => {
+            if (!audioElement && !useSynth) return;
+            
             if (isPlaying) {
-                audioElement.pause();
+                // Pause
+                if (audioElement) {
+                    audioElement.pause();
+                } else if (useSynth) {
+                    synthPauseTime = getCurrentTime();
+                    stopSynth();
+                }
                 isPlaying = false;
                 if (playBtn) playBtn.innerText = "▶ Play";
             } else {
-                audioElement.play();
+                // Play
+                if (audioElement) {
+                    audioElement.play();
+                } else if (useSynth) {
+                    // Tone.js requires user interaction to start audio context
+                    await Tone.start();
+                    scheduleNotes(synthPauseTime);
+                    synthStartTime = Tone.now();
+                    Tone.Transport.start();
+                }
                 isPlaying = true;
                 if (playBtn) playBtn.innerText = "❚❚ Pause";
             }
         };
 
         const seekTo = (tick: number) => {
+            const time = this.ticksToSeconds(tick);
             if (audioElement) {
-                const time = this.ticksToSeconds(tick);
                 audioElement.currentTime = Math.max(0, time);
+            } else if (useSynth) {
+                const wasPlaying = isPlaying;
+                if (wasPlaying) {
+                    stopSynth();
+                }
+                synthPauseTime = Math.max(0, time);
+                if (wasPlaying) {
+                    scheduleNotes(synthPauseTime);
+                    synthStartTime = Tone.now();
+                    Tone.Transport.start();
+                }
             }
         };
 
@@ -429,8 +649,8 @@ export default class MidiVisualizerPlugin extends Plugin {
 
         // --- RENDER LOOP ---
         const draw = () => {
-            if (isPlaying && audioElement && !isDraggingRuler && !isDraggingPlayhead) {
-                const playTick = this.secondsToTicks(audioElement.currentTime);
+            if (isPlaying && (audioElement || useSynth) && !isDraggingRuler && !isDraggingPlayhead) {
+                const playTick = this.secondsToTicks(getCurrentTime());
                 const visibleTicks = (canvas.width - keyWidth) / zoomX;
                 let targetScroll = playTick - (visibleTicks / 2);
                 const maxScroll = Math.max(0, songEndTick - visibleTicks);
@@ -534,8 +754,8 @@ export default class MidiVisualizerPlugin extends Plugin {
                 }
             }
 
-            if (audioElement) {
-                const playTick = this.secondsToTicks(audioElement.currentTime);
+            if (audioElement || useSynth) {
+                const playTick = this.secondsToTicks(getCurrentTime());
                 const playheadX = (keyWidth + (playTick - scrollTick) * zoomX) | 0;
 
                 if (playheadX >= keyWidth && playheadX <= canvas.width) {
@@ -549,9 +769,10 @@ export default class MidiVisualizerPlugin extends Plugin {
             ctx.fillStyle = colors.rulerCorner; ctx.fillRect(0, 0, keyWidth, rulerHeight);
             ctx.strokeStyle = colors.keyBlack; ctx.strokeRect(0, 0, keyWidth, rulerHeight);
 
-            if (isPlaying || audioElement) requestAnimationFrame(draw);
+            if (isPlaying || audioElement || useSynth) requestAnimationFrame(draw);
         };
 
+        // Handle playback ended
         if (audioElement) {
             audioElement.addEventListener('ended', () => {
                 isPlaying = false;
@@ -561,6 +782,24 @@ export default class MidiVisualizerPlugin extends Plugin {
                 requestAnimationFrame(draw);
             });
         }
+        
+        // For synth mode, check if playback has ended
+        const checkSynthEnded = () => {
+            if (useSynth && isPlaying) {
+                const songDuration = this.ticksToSeconds(songEndTick);
+                if (getCurrentTime() >= songDuration) {
+                    isPlaying = false;
+                    stopSynth();
+                    synthPauseTime = 0;
+                    if (playBtn) playBtn.innerText = "▶ Play";
+                    scrollTick = 0;
+                    requestAnimationFrame(draw);
+                } else {
+                    requestAnimationFrame(checkSynthEnded);
+                }
+            }
+        };
+        if (useSynth) requestAnimationFrame(checkSynthEnded);
 
         canvas.addEventListener("wheel", (e) => {
             e.preventDefault();
@@ -579,30 +818,71 @@ export default class MidiVisualizerPlugin extends Plugin {
             requestAnimationFrame(draw);
         }, { passive: false });
 
+        // --- UNIFIED POINTER HANDLING (Mouse + Touch) ---
         let dragStartX = 0;
+        let dragStartY = 0;
+        let lastPointerX = 0;
+        let lastPointerY = 0;
         let didDrag = false;
         
-        canvas.addEventListener("mousedown", (e) => {
-            const x = e.offsetX; const y = e.offsetY;
-            dragStartX = x; didDrag = false;
+        // For pinch-to-zoom
+        let initialPinchDistance = 0;
+        let initialZoom = 0;
+        let isPinching = false;
+        
+        // Helper to get pointer position relative to canvas
+        const getPointerPos = (e: MouseEvent | Touch): { x: number, y: number } => {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            if ('offsetX' in e) {
+                return { x: e.offsetX, y: e.offsetY };
+            } else {
+                return {
+                    x: (e.clientX - rect.left) * scaleX,
+                    y: (e.clientY - rect.top) * scaleY
+                };
+            }
+        };
+        
+        const handlePointerDown = (x: number, y: number, isTouch: boolean = false) => {
+            dragStartX = x;
+            dragStartY = y;
+            lastPointerX = x;
+            lastPointerY = y;
+            didDrag = false;
 
-            if (audioElement && y < rulerHeight + 10) {
-                const playTick = this.secondsToTicks(audioElement.currentTime);
+            // Increase hit area for playhead on touch (20px instead of 10px)
+            const hitArea = isTouch ? 20 : 10;
+            
+            if ((audioElement || useSynth) && y < rulerHeight + hitArea) {
+                const playTick = this.secondsToTicks(getCurrentTime());
                 const playheadX = (keyWidth + (playTick - scrollTick) * zoomX) | 0;
-                if (Math.abs(x - playheadX) < 10) {
-                    isDraggingPlayhead = true; canvas.style.cursor = "ew-resize"; return;
+                if (Math.abs(x - playheadX) < hitArea) {
+                    isDraggingPlayhead = true;
+                    canvas.style.cursor = "ew-resize";
+                    return;
                 }
             }
             if (y < rulerHeight) { isDraggingRuler = true; canvas.style.cursor = "default"; }
             else if (x < keyWidth) { isDraggingKeys = true; canvas.style.cursor = "ns-resize"; }
-            else { canvas.style.cursor = "grab"; }
-        });
-
-        const onMouseMove = (e: MouseEvent) => {
-            if (!isDraggingRuler && !isDraggingPlayhead && !isDraggingKeys) {
-                const x = e.offsetX; const y = e.offsetY;
-                if (audioElement && y < rulerHeight + 10) {
-                    const playTick = this.secondsToTicks(audioElement.currentTime);
+            else {
+                // Canvas area - enable panning (especially useful for touch)
+                isDraggingCanvas = true;
+                canvas.style.cursor = "grab";
+            }
+        };
+        
+        const handlePointerMove = (x: number, y: number) => {
+            const movementX = x - lastPointerX;
+            const movementY = y - lastPointerY;
+            lastPointerX = x;
+            lastPointerY = y;
+            
+            if (!isDraggingRuler && !isDraggingPlayhead && !isDraggingKeys && !isDraggingCanvas) {
+                // Hover state (mouse only)
+                if ((audioElement || useSynth) && y < rulerHeight + 10) {
+                    const playTick = this.secondsToTicks(getCurrentTime());
                     const playheadX = (keyWidth + (playTick - scrollTick) * zoomX) | 0;
                     if (Math.abs(x - playheadX) < 10) { canvas.style.cursor = "pointer"; return; }
                 }
@@ -612,46 +892,131 @@ export default class MidiVisualizerPlugin extends Plugin {
                 return;
             }
 
-            if (Math.abs(e.offsetX - dragStartX) > 3) didDrag = true;
+            if (Math.abs(x - dragStartX) > 3 || Math.abs(y - dragStartY) > 3) didDrag = true;
 
             if (isDraggingPlayhead) {
-                 if (audioElement) {
-                     const mouseX = e.offsetX - keyWidth;
-                     const tick = scrollTick + (mouseX / zoomX);
-                     seekTo(tick);
-                 }
+                if (audioElement || useSynth) {
+                    const pointerX = x - keyWidth;
+                    const tick = scrollTick + (pointerX / zoomX);
+                    seekTo(tick);
+                }
             }
             else if (isDraggingRuler) {
                 canvas.style.cursor = "ew-resize";
-                if (Math.abs(e.movementX) > 0) scrollTick -= e.movementX / zoomX;
-                if (Math.abs(e.movementY) > 0) {
-                    const mouseX = e.offsetX - keyWidth;
-                    const tickAtMouse = scrollTick + (mouseX / zoomX);
-                    const zoomFactor = 1 + Math.abs(e.movementY * 0.01);
-                    if (e.movementY > 0) zoomX *= zoomFactor; else zoomX /= zoomFactor;
+                if (Math.abs(movementX) > 0) scrollTick -= movementX / zoomX;
+                if (Math.abs(movementY) > 0) {
+                    const pointerX = x - keyWidth;
+                    const tickAtPointer = scrollTick + (pointerX / zoomX);
+                    const zoomFactor = 1 + Math.abs(movementY * 0.01);
+                    if (movementY > 0) zoomX *= zoomFactor; else zoomX /= zoomFactor;
                     applyConstraints();
-                    scrollTick = tickAtMouse - (mouseX / zoomX);
+                    scrollTick = tickAtPointer - (pointerX / zoomX);
                 }
             }
-            else if (isDraggingKeys) scrollY -= e.movementY;
+            else if (isDraggingKeys) scrollY -= movementY;
+            else if (isDraggingCanvas) {
+                // Pan both horizontally and vertically
+                canvas.style.cursor = "grabbing";
+                scrollTick -= movementX / zoomX;
+                scrollY -= movementY;
+            }
 
             applyConstraints();
             requestAnimationFrame(draw);
         };
-
-        const onMouseUp = (e: MouseEvent) => {
-            if (isDraggingRuler && !didDrag && audioElement) {
-                const mouseX = e.offsetX - keyWidth;
-                const tick = scrollTick + (mouseX / zoomX);
+        
+        const handlePointerUp = (x: number, y: number) => {
+            if (isDraggingRuler && !didDrag && (audioElement || useSynth)) {
+                const pointerX = x - keyWidth;
+                const tick = scrollTick + (pointerX / zoomX);
                 seekTo(tick);
                 requestAnimationFrame(draw);
             }
-            isDraggingRuler = false; isDraggingPlayhead = false; isDraggingKeys = false;
+            isDraggingRuler = false; isDraggingPlayhead = false; isDraggingKeys = false; isDraggingCanvas = false;
+            isPinching = false;
             canvas.style.cursor = "default";
+        };
+        
+        // Mouse events
+        canvas.addEventListener("mousedown", (e) => {
+            const pos = getPointerPos(e);
+            handlePointerDown(pos.x, pos.y);
+        });
+
+        const onMouseMove = (e: MouseEvent) => {
+            const pos = getPointerPos(e);
+            handlePointerMove(pos.x, pos.y);
+        };
+
+        const onMouseUp = (e: MouseEvent) => {
+            const pos = getPointerPos(e);
+            handlePointerUp(pos.x, pos.y);
         };
 
         canvas.addEventListener("mousemove", onMouseMove);
         window.addEventListener("mouseup", onMouseUp);
+        
+        // Touch events
+        canvas.addEventListener("touchstart", (e) => {
+            if (e.touches.length === 2) {
+                // Pinch gesture start
+                e.preventDefault();
+                isPinching = true;
+                const dx = e.touches[0].clientX - e.touches[1].clientX;
+                const dy = e.touches[0].clientY - e.touches[1].clientY;
+                initialPinchDistance = Math.sqrt(dx * dx + dy * dy);
+                initialZoom = zoomX;
+            } else if (e.touches.length === 1) {
+                e.preventDefault();
+                const pos = getPointerPos(e.touches[0]);
+                handlePointerDown(pos.x, pos.y, true); // isTouch = true
+            }
+        }, { passive: false });
+        
+        canvas.addEventListener("touchmove", (e) => {
+            if (e.touches.length === 2 && isPinching) {
+                // Pinch gesture
+                e.preventDefault();
+                const dx = e.touches[0].clientX - e.touches[1].clientX;
+                const dy = e.touches[0].clientY - e.touches[1].clientY;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                const scale = distance / initialPinchDistance;
+                
+                // Get center point of pinch
+                const rect = canvas.getBoundingClientRect();
+                const centerX = ((e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left) * (canvas.width / rect.width);
+                const tickAtCenter = scrollTick + ((centerX - keyWidth) / zoomX);
+                
+                zoomX = initialZoom * scale;
+                applyConstraints();
+                scrollTick = tickAtCenter - ((centerX - keyWidth) / zoomX);
+                applyConstraints();
+                requestAnimationFrame(draw);
+            } else if (e.touches.length === 1 && !isPinching) {
+                e.preventDefault();
+                const pos = getPointerPos(e.touches[0]);
+                handlePointerMove(pos.x, pos.y);
+            }
+        }, { passive: false });
+        
+        canvas.addEventListener("touchend", (e) => {
+            if (e.touches.length === 0) {
+                if (e.changedTouches.length > 0) {
+                    const pos = getPointerPos(e.changedTouches[0]);
+                    handlePointerUp(pos.x, pos.y);
+                }
+            } else if (e.touches.length === 1 && isPinching) {
+                // Transitioned from pinch to single touch
+                isPinching = false;
+                const pos = getPointerPos(e.touches[0]);
+                handlePointerDown(pos.x, pos.y, true); // isTouch = true
+            }
+        }, { passive: false });
+        
+        canvas.addEventListener("touchcancel", () => {
+            isDraggingRuler = false; isDraggingPlayhead = false; isDraggingKeys = false; isDraggingCanvas = false;
+            isPinching = false;
+        });
 
         container.addEventListener("mouseenter", () => container.focus());
         canvas.tabIndex = 0;
