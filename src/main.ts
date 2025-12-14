@@ -399,8 +399,6 @@ export default class MidiVisualizerPlugin extends Plugin {
                 bgCtx.beginPath(); bgCtx.moveTo(keyWidth, y); bgCtx.lineTo(bgCanvas.width, y); bgCtx.stroke();
                 bgCtx.fillStyle = isBlackKey ? colors.keyBlack : colors.keyWhite;
                 bgCtx.fillRect(0, y, keyWidth, noteHeight);
-                bgCtx.strokeStyle = colors.keyBorder;
-                bgCtx.strokeRect(0, y, keyWidth, noteHeight);
                 if (currentMidi % 12 === 0) {
                     bgCtx.fillStyle = colors.keyLabel;
                     bgCtx.font = "10px sans-serif";
@@ -767,7 +765,6 @@ export default class MidiVisualizerPlugin extends Plugin {
             }
 
             ctx.fillStyle = colors.rulerCorner; ctx.fillRect(0, 0, keyWidth, rulerHeight);
-            ctx.strokeStyle = colors.keyBlack; ctx.strokeRect(0, 0, keyWidth, rulerHeight);
 
             if (isPlaying || audioElement || useSynth) requestAnimationFrame(draw);
         };

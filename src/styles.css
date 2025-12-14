@@ -1,5 +1,6 @@
 /* ============================================
    MIDI Visualizer - Theme Variables
+   Flat, edgeless design
    ============================================ */
 
 .midi-roll-wrapper {
@@ -23,115 +24,115 @@
    Dark Mode (default)
    ============================================ */
 .theme-dark .midi-roll-wrapper {
-    /* Canvas colors */
-    --midi-bg: var(--background-primary-alt, #222);
-    --midi-bg-black-row: var(--background-secondary-alt, #1a1a1a);
-    --midi-grid-line: var(--background-modifier-border, #333);
-    --midi-grid-line-measure: var(--background-modifier-border-hover, #444);
+    /* Canvas colors - more subtle, blends into page */
+    --midi-bg: var(--background-primary, #1e1e1e);
+    --midi-bg-black-row: var(--background-primary-alt, #1a1a1a);
+    --midi-grid-line: rgba(255, 255, 255, 0.04);
+    --midi-grid-line-measure: rgba(255, 255, 255, 0.08);
     
-    /* Piano keys */
-    --midi-key-white: #e8e8e8;
-    --midi-key-black: #1a1a1a;
-    --midi-key-border: var(--background-modifier-border, #555);
-    --midi-key-label: #222;
+    /* Piano keys - softer, blends with theme */
+    --midi-key-white: rgba(255, 255, 255, 0.12);
+    --midi-key-black: rgba(0, 0, 0, 0.25);
+    --midi-key-border: transparent;
+    --midi-key-label: rgba(255, 255, 255, 0.3);
     
-    /* Ruler */
-    --midi-ruler-bg: var(--background-secondary, #333);
-    --midi-ruler-line: var(--text-muted, #999);
-    --midi-ruler-text: var(--text-normal, #ccc);
-    --midi-ruler-beat: var(--text-faint, #666);
-    --midi-ruler-corner: var(--background-primary-alt, #222);
+    /* Ruler - blends with canvas */
+    --midi-ruler-bg: var(--background-primary, #1e1e1e);
+    --midi-ruler-line: rgba(255, 255, 255, 0.15);
+    --midi-ruler-text: var(--text-muted, #888);
+    --midi-ruler-beat: rgba(255, 255, 255, 0.3);
+    --midi-ruler-corner: var(--background-primary, #1e1e1e);
     
-    /* Playhead */
-    --midi-playhead: #ff4444;
+    /* Playhead - slightly softer */
+    --midi-playhead: #e54545;
     
-    /* Notes */
-    --midi-note-saturation: 70%;
-    --midi-note-lightness: 60%;
-    --midi-note-label: #000;
+    /* Notes - slightly desaturated for flat look */
+    --midi-note-saturation: 55%;
+    --midi-note-lightness: 58%;
+    --midi-note-label: rgba(0, 0, 0, 0.7);
     
-    /* Controls bar */
-    --midi-controls-bg: var(--background-secondary, #2a2a2a);
-    --midi-controls-border: var(--background-modifier-border, #444);
-    --midi-button-bg: var(--interactive-normal, #444);
-    --midi-button-bg-hover: var(--interactive-hover, #555);
-    --midi-button-text: var(--text-normal, #fff);
-    --midi-button-border: var(--background-modifier-border, #555);
-    --midi-slider-accent: var(--interactive-accent, #888);
-    --midi-icon-color: var(--text-muted, #ccc);
+    /* Controls bar - seamless with canvas */
+    --midi-controls-bg: var(--background-primary, #1e1e1e);
+    --midi-controls-border: transparent;
+    --midi-button-bg: rgba(255, 255, 255, 0.06);
+    --midi-button-bg-hover: rgba(255, 255, 255, 0.1);
+    --midi-button-text: var(--text-muted, #aaa);
+    --midi-button-border: rgba(255, 255, 255, 0.08);
+    --midi-slider-accent: var(--text-muted, #666);
+    --midi-icon-color: var(--text-faint, #666);
 }
 
 /* ============================================
    Light Mode
    ============================================ */
 .theme-light .midi-roll-wrapper {
-    /* Canvas colors */
-    --midi-bg: var(--background-primary-alt, #f5f5f5);
-    --midi-bg-black-row: var(--background-secondary-alt, #e0e0e0);
-    --midi-grid-line: var(--background-modifier-border, #ccc);
-    --midi-grid-line-measure: var(--background-modifier-border-hover, #aaa);
+    /* Canvas colors - subtle, page-like */
+    --midi-bg: var(--background-primary, #ffffff);
+    --midi-bg-black-row: var(--background-primary-alt, #f8f8f8);
+    --midi-grid-line: rgba(0, 0, 0, 0.04);
+    --midi-grid-line-measure: rgba(0, 0, 0, 0.08);
     
-    /* Piano keys */
-    --midi-key-white: #ffffff;
-    --midi-key-black: #222222;
-    --midi-key-border: var(--background-modifier-border, #999);
-    --midi-key-label: #333;
+    /* Piano keys - softer, blends with theme */
+    --midi-key-white: rgba(255, 255, 255, 0.5);
+    --midi-key-black: rgba(0, 0, 0, 0.08);
+    --midi-key-border: transparent;
+    --midi-key-label: rgba(0, 0, 0, 0.25);
     
-    /* Ruler */
-    --midi-ruler-bg: var(--background-secondary, #e0e0e0);
-    --midi-ruler-line: var(--text-muted, #666);
-    --midi-ruler-text: var(--text-normal, #333);
-    --midi-ruler-beat: var(--text-faint, #888);
-    --midi-ruler-corner: var(--background-primary-alt, #eaeaea);
+    /* Ruler - blends with canvas */
+    --midi-ruler-bg: var(--background-primary, #ffffff);
+    --midi-ruler-line: rgba(0, 0, 0, 0.12);
+    --midi-ruler-text: var(--text-muted, #777);
+    --midi-ruler-beat: rgba(0, 0, 0, 0.25);
+    --midi-ruler-corner: var(--background-primary, #ffffff);
     
     /* Playhead */
-    --midi-playhead: #dd2222;
+    --midi-playhead: #d93636;
     
-    /* Notes - slightly more saturated for light backgrounds */
-    --midi-note-saturation: 75%;
-    --midi-note-lightness: 50%;
-    --midi-note-label: #fff;
+    /* Notes - softer saturation */
+    --midi-note-saturation: 55%;
+    --midi-note-lightness: 52%;
+    --midi-note-label: rgba(255, 255, 255, 0.85);
     
-    /* Controls bar */
-    --midi-controls-bg: var(--background-secondary, #e8e8e8);
-    --midi-controls-border: var(--background-modifier-border, #ccc);
-    --midi-button-bg: var(--interactive-normal, #d0d0d0);
-    --midi-button-bg-hover: var(--interactive-hover, #c0c0c0);
-    --midi-button-text: var(--text-normal, #222);
-    --midi-button-border: var(--background-modifier-border, #aaa);
-    --midi-slider-accent: var(--interactive-accent, #666);
-    --midi-icon-color: var(--text-muted, #555);
+    /* Controls bar - seamless */
+    --midi-controls-bg: var(--background-primary, #ffffff);
+    --midi-controls-border: transparent;
+    --midi-button-bg: rgba(0, 0, 0, 0.04);
+    --midi-button-bg-hover: rgba(0, 0, 0, 0.08);
+    --midi-button-text: var(--text-muted, #666);
+    --midi-button-border: rgba(0, 0, 0, 0.08);
+    --midi-slider-accent: var(--text-muted, #999);
+    --midi-icon-color: var(--text-faint, #888);
 }
 
 /* ============================================
    Fallback for when no theme class is present
    ============================================ */
 .midi-roll-wrapper {
-    --midi-bg: var(--background-primary-alt, #222);
-    --midi-bg-black-row: var(--background-secondary-alt, #1a1a1a);
-    --midi-grid-line: var(--background-modifier-border, #333);
-    --midi-grid-line-measure: var(--background-modifier-border-hover, #444);
-    --midi-key-white: #e8e8e8;
-    --midi-key-black: #1a1a1a;
-    --midi-key-border: var(--background-modifier-border, #555);
-    --midi-key-label: #222;
-    --midi-ruler-bg: var(--background-secondary, #333);
-    --midi-ruler-line: var(--text-muted, #999);
-    --midi-ruler-text: var(--text-normal, #ccc);
-    --midi-ruler-beat: var(--text-faint, #666);
-    --midi-ruler-corner: var(--background-primary-alt, #222);
-    --midi-playhead: #ff4444;
-    --midi-note-saturation: 70%;
-    --midi-note-lightness: 60%;
-    --midi-note-label: #000;
-    --midi-controls-bg: var(--background-secondary, #2a2a2a);
-    --midi-controls-border: var(--background-modifier-border, #444);
-    --midi-button-bg: var(--interactive-normal, #444);
-    --midi-button-bg-hover: var(--interactive-hover, #555);
-    --midi-button-text: var(--text-normal, #fff);
-    --midi-button-border: var(--background-modifier-border, #555);
-    --midi-slider-accent: var(--interactive-accent, #888);
-    --midi-icon-color: var(--text-muted, #ccc);
+    --midi-bg: var(--background-primary, #1e1e1e);
+    --midi-bg-black-row: var(--background-primary-alt, #1a1a1a);
+    --midi-grid-line: rgba(255, 255, 255, 0.04);
+    --midi-grid-line-measure: rgba(255, 255, 255, 0.08);
+    --midi-key-white: rgba(255, 255, 255, 0.12);
+    --midi-key-black: rgba(0, 0, 0, 0.25);
+    --midi-key-border: transparent;
+    --midi-key-label: rgba(255, 255, 255, 0.3);
+    --midi-ruler-bg: var(--background-primary, #1e1e1e);
+    --midi-ruler-line: rgba(255, 255, 255, 0.15);
+    --midi-ruler-text: var(--text-muted, #888);
+    --midi-ruler-beat: rgba(255, 255, 255, 0.3);
+    --midi-ruler-corner: var(--background-primary, #1e1e1e);
+    --midi-playhead: #e54545;
+    --midi-note-saturation: 55%;
+    --midi-note-lightness: 58%;
+    --midi-note-label: rgba(0, 0, 0, 0.7);
+    --midi-controls-bg: var(--background-primary, #1e1e1e);
+    --midi-controls-border: transparent;
+    --midi-button-bg: rgba(255, 255, 255, 0.06);
+    --midi-button-bg-hover: rgba(255, 255, 255, 0.1);
+    --midi-button-text: var(--text-muted, #aaa);
+    --midi-button-border: rgba(255, 255, 255, 0.08);
+    --midi-slider-accent: var(--text-muted, #666);
+    --midi-icon-color: var(--text-faint, #666);
 }
 
 /* ============================================
@@ -148,60 +149,82 @@
 .midi-roll-canvas {
     display: block;
     max-width: 100%;
-    border-radius: 4px 4px 0 0;
+    border-radius: 6px 6px 0 0;
 }
 
 /* When there's no audio (no controls bar), restore full border radius */
 .midi-roll-wrapper:not(:has(.midi-bottom-bar)) .midi-roll-canvas {
-    border-radius: 4px;
+    border-radius: 6px;
 }
 
-/* Controls bar */
+/* Controls bar - flat, seamless */
 .midi-bottom-bar {
     width: 100%;
     background: var(--midi-controls-bg);
-    border-radius: 0 0 4px 4px;
+    border-radius: 0 0 6px 6px;
+    border-top: 1px solid var(--midi-grid-line);
     display: flex;
     align-items: center;
-    padding: 8px;
-    gap: 15px;
+    padding: 10px 12px;
+    gap: 12px;
     box-sizing: border-box;
 }
 
 .midi-bottom-bar button {
     cursor: pointer;
-    padding: 4px 12px;
-    background: var(--midi-button-bg);
+    padding: 6px 12px;
+    background: transparent;
     color: var(--midi-button-text);
-    border: 1px solid var(--midi-button-border);
-    border-radius: 3px;
+    border: none !important;
+    border-radius: 4px;
     font-size: 12px;
-    font-weight: bold;
-    min-width: 60px;
-    transition: background 0.15s ease;
+    font-weight: 500;
+    min-width: auto;
+    box-shadow: none !important;
+    outline: none !important;
+    transition: color 0.12s ease, background 0.12s ease;
 }
 
 .midi-bottom-bar button:hover {
     background: var(--midi-button-bg-hover);
+    color: var(--text-normal, #fff);
+    box-shadow: none !important;
+}
+
+.midi-bottom-bar button:focus {
+    outline: none !important;
+    box-shadow: none !important;
+}
+
+.midi-bottom-bar button:active {
+    background: var(--midi-button-bg-hover);
+    transform: scale(0.98);
+    box-shadow: none !important;
 }
 
 .midi-volume-group {
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 6px;
 }
 
 .midi-volume-icon {
     font-size: 14px;
     color: var(--midi-icon-color);
     cursor: default;
+    opacity: 0.7;
 }
 
 .midi-volume-slider {
-    width: 80px;
+    width: 70px;
     cursor: pointer;
-    height: 4px;
+    height: 3px;
     accent-color: var(--midi-slider-accent);
+    opacity: 0.8;
+}
+
+.midi-volume-slider:hover {
+    opacity: 1;
 }
 
 /* ============================================
@@ -209,17 +232,19 @@
    ============================================ */
 @media (max-width: 768px) {
     .midi-bottom-bar {
-        padding: 10px;
+        padding: 12px;
         gap: 10px;
         flex-wrap: wrap;
         justify-content: center;
     }
     
     .midi-bottom-bar button {
-        padding: 8px 16px;
+        padding: 10px 16px;
         font-size: 14px;
-        min-width: 70px;
+        min-width: auto;
         min-height: 44px; /* Apple's recommended touch target */
+        box-shadow: none !important;
+        border: none !important;
     }
     
     .midi-volume-group {
@@ -231,7 +256,7 @@
     
     .midi-volume-slider {
         width: 120px;
-        height: 8px;
+        height: 6px;
     }
     
     .midi-volume-icon {
@@ -263,10 +288,4 @@
     -webkit-touch-callout: none;
     -webkit-user-select: none;
     user-select: none;
-}
-
-/* Active state for touch feedback */
-.midi-bottom-bar button:active {
-    background: var(--midi-button-bg-hover);
-    transform: scale(0.98);
 }
